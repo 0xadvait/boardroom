@@ -14,7 +14,8 @@ Use a stdio MCP server config like this, replacing the path and MongoDB URI with
       "args": ["/Users/advaitjayant/hackathon/team-manager/scripts/mcp-server.ts"],
       "env": {
         "MONGODB_URI": "mongodb+srv://advait:<URL_ENCODED_PASSWORD>@cluster0.1hulng.mongodb.net/?appName=Cluster0",
-        "TEAM_MANAGER_DB": "team_manager"
+        "TEAM_MANAGER_DB": "team_manager",
+        "BRIGHTDATA_API_TOKEN": "<optional_for_team_manager_find_sources>"
       }
     }
   }
@@ -22,6 +23,7 @@ Use a stdio MCP server config like this, replacing the path and MongoDB URI with
 ```
 
 The server logs governance events to stderr while keeping stdout protocol-clean for MCP JSON-RPC.
+If Bright Data is not configured inside Team Manager, use the MCP host's native search and call `team_manager_set_sources` with URLs plus optional `extractedText`.
 
 ## Judge Prompt
 
@@ -34,9 +36,9 @@ I want to evaluate whether my company should get listed on Coinbase as an exchan
 Expected tool sequence:
 
 1. `team_manager_plan_room`
-2. The MCP host asks the user the manager's returned questions. The returned plan includes task type, routing cascade, versioned capability vectors, model choices, and per-agent token caps.
+2. The MCP host asks the user the manager's returned questions. The returned plan includes task type, routing cascade, versioned capability vectors, execution profiles, budget math, and per-agent token caps.
 3. `team_manager_approve_plan`
-4. `team_manager_set_sources`
+4. `team_manager_find_sources` if Bright Data MCP is configured, otherwise host-native search followed by `team_manager_set_sources`
 5. `team_manager_start_room`
 6. `team_manager_ingest_sources`
 7. Host-run specialist agents use `team_manager_query_context`, `team_manager_post_blackboard`, `team_manager_write_memory`, `team_manager_record_checkpoint`, and `team_manager_update_budget`
@@ -53,8 +55,8 @@ Show the MCP host calling the manager tools and MongoDB receiving the room state
 - the Team Manager's questions before execution
 - classified task type and selected specialists from the broader capability pool
 - routing cascade and weighted capability formula
-- per-agent token caps and group threshold actions
-- arbitrary source registration and source ingestion into `source_documents`
+- task-estimated per-agent token caps, budget formula inputs, and group threshold actions
+- Bright Data search/scrape or host-native source registration and source ingestion into `source_documents`
 - blackboard entries and scoped memory cards
 - checkpoint write, host-side interruption record, and resume context
 - final audited decision linking claims to blackboard entries and sources

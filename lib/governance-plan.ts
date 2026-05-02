@@ -9,48 +9,80 @@ const DEFAULT_WEIGHTS = {
   tokenEfficiency: 0.15
 };
 
+const TASK_COMPLEXITY_MULTIPLIER: Record<string, number> = {
+  crypto_market_decision: 1.3,
+  legal_risk: 1.25,
+  technical_decision: 1.18,
+  procurement_decision: 1.12,
+  financial_analysis: 1.12,
+  market_strategy: 1.1,
+  general_decision: 1
+};
+
 function now(): string {
   return new Date().toISOString();
 }
 
+function configuredModel(
+  envKeys: string[],
+  fallbackSlot: string,
+  fallbackProvider: ModelProfile["provider"],
+  reason: string,
+  temperature: number,
+  maxOutputTokens: number
+): ModelProfile {
+  const configured = envKeys.map((key) => process.env[key]).find((value): value is string => Boolean(value));
+  return {
+    provider: configured ? fallbackProvider : "configurable",
+    model: configured ?? fallbackSlot,
+    temperature,
+    maxOutputTokens,
+    reason: configured ? reason : `${reason} Concrete model is selected by the MCP host or by env config at runtime.`
+  };
+}
+
 function modelProfile(kind: "manager" | "evidence" | "reviewer" | "summarizer"): ModelProfile {
   if (kind === "manager") {
-    return {
-      provider: "host",
-      model: process.env.TEAM_MANAGER_MANAGER_MODEL ?? process.env.BOARDROOM_MANAGER_MODEL ?? "host-reasoning-high",
-      temperature: 0.2,
-      maxOutputTokens: 2400,
-      reason: "The manager needs planning quality, tradeoff explanation, and user negotiation more than raw speed."
-    };
+    return configuredModel(
+      ["TEAM_MANAGER_MANAGER_MODEL", "BOARDROOM_MANAGER_MODEL"],
+      "runtime manager planning model",
+      "host",
+      "The manager needs planning quality, tradeoff explanation, and user negotiation more than raw speed.",
+      0.2,
+      2400
+    );
   }
 
   if (kind === "reviewer") {
-    return {
-      provider: "host",
-      model: process.env.TEAM_MANAGER_REVIEW_MODEL ?? process.env.BOARDROOM_REVIEW_MODEL ?? "host-reviewer-high-accuracy",
-      temperature: 0.1,
-      maxOutputTokens: 1800,
-      reason: "Security and contract gates are high-risk; use the most reliable reviewer profile available in the MCP host."
-    };
+    return configuredModel(
+      ["TEAM_MANAGER_REVIEW_MODEL", "BOARDROOM_REVIEW_MODEL"],
+      "runtime high-accuracy reviewer model",
+      "host",
+      "Risk, legal, and critic gates need the most reliable reviewer profile available in the MCP host.",
+      0.1,
+      1800
+    );
   }
 
   if (kind === "summarizer") {
-    return {
-      provider: "fireworks",
-      model: process.env.TEAM_MANAGER_SUMMARIZER_MODEL ?? process.env.BOARDROOM_SUMMARIZER_MODEL ?? "fireworks-compact-summarizer",
-      temperature: 0.1,
-      maxOutputTokens: 1200,
-      reason: "Summarization is latency-sensitive and benefits from a small, deterministic model profile."
-    };
+    return configuredModel(
+      ["TEAM_MANAGER_SUMMARIZER_MODEL", "BOARDROOM_SUMMARIZER_MODEL"],
+      "runtime compact summarizer model",
+      "configurable",
+      "Summarization is latency-sensitive and benefits from a small, deterministic model profile.",
+      0.1,
+      1200
+    );
   }
 
-  return {
-    provider: "fireworks",
-    model: process.env.TEAM_MANAGER_SPECIALIST_MODEL ?? process.env.BOARDROOM_SPECIALIST_MODEL ?? "fireworks-fast-evidence-worker",
-    temperature: 0.2,
-    maxOutputTokens: 1700,
-    reason: "Evidence extraction and structured findings should be fast, low-temperature, and cheap enough for parallel specialists."
-  };
+  return configuredModel(
+    ["TEAM_MANAGER_SPECIALIST_MODEL", "BOARDROOM_SPECIALIST_MODEL"],
+    "runtime fast evidence-worker model",
+    "configurable",
+    "Evidence extraction and structured findings should be fast, low-temperature, and cheap enough for parallel specialists.",
+    0.2,
+    1700
+  );
 }
 
 function priority(agent: AgentProfile): PlannedAgent["priority"] {
@@ -63,26 +95,118 @@ function priority(agent: AgentProfile): PlannedAgent["priority"] {
   return "medium";
 }
 
-function budgetShare(agent: AgentProfile): number {
-  const shares: Record<string, number> = {
-    "agent-evidence": 0.18,
-    "agent-technical": 0.15,
-    "agent-market": 0.14,
-    "agent-legal": 0.16,
-    "agent-finance": 0.14,
-    "agent-crypto": 0.16,
-    "agent-risk": 0.13,
-    "agent-strategy": 0.14,
-    "agent-critic": 0.14
-  };
-  return shares[agent.agentId] ?? 0.14;
-}
-
 function modelForAgent(agent: AgentProfile): ModelProfile {
   if (["agent-legal", "agent-risk", "agent-critic"].includes(agent.agentId)) {
     return modelProfile("reviewer");
   }
   return modelProfile("evidence");
+}
+
+function roughTokenCount(text: string): number {
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.ceil(words * 1.35));
+}
+
+function requestComplexityScore(request: string, taskType: string): number {
+  const lower = request.toLowerCase();
+  const riskSignals = [
+    "regulatory",
+    "legal",
+    "compliance",
+    "security",
+    "financial",
+    "audit",
+    "public sources",
+    "sources",
+    "checkpoint",
+    "private",
+    "budget",
+    "multi-agent",
+    "exchange",
+    "listing"
+  ].filter((signal) => lower.includes(signal)).length;
+  const taskMultiplier = TASK_COMPLEXITY_MULTIPLIER[taskType] ?? 1;
+  const lengthComponent = Math.min(2.2, roughTokenCount(request) / 160);
+  return (1 + lengthComponent + riskSignals * 0.14) * taskMultiplier;
+}
+
+function selectedAgentHistoricalTokens(taskType: string, agents: AgentProfile[]): number {
+  return agents.reduce((sum, agent) => sum + historicalTokensForAgent(agent, taskType), 0) || 24_000;
+}
+
+function coordinationOverheadTokens(request: string, agents: AgentProfile[]): number {
+  return Math.round((agents.length + 1) * roughTokenCount(request) * 16);
+}
+
+function estimateTotalTokenBudget(request: string, taskType: string, agents: AgentProfile[]): number {
+  const complexity = requestComplexityScore(request, taskType);
+  const historicalNeed = selectedAgentHistoricalTokens(taskType, agents);
+  const coordinationOverhead = coordinationOverheadTokens(request, agents);
+  const estimate = Math.round((historicalNeed * complexity + coordinationOverhead) / 1000) * 1000;
+  return Math.min(120_000, Math.max(22_000, estimate));
+}
+
+function reserveRatio(taskType: string, request: string): number {
+  const complexity = requestComplexityScore(request, taskType);
+  if (complexity >= 2.2) {
+    return 0.18;
+  }
+  if (complexity >= 1.7) {
+    return 0.16;
+  }
+  return 0.14;
+}
+
+function historicalTokensForAgent(agent: AgentProfile, taskType: string): number {
+  const proven = agent.provenSkills[taskType] ?? agent.provenSkills.general_decision;
+  return proven?.avgTokens ?? Math.round(agent.avgDurationMs / 4);
+}
+
+function budgetDemand(agent: AgentProfile, taskType: string): number {
+  const historicalTokens = historicalTokensForAgent(agent, taskType);
+  const priorityLevel = priority(agent);
+  const priorityMultiplier = priorityLevel === "critical" ? 1.22 : priorityLevel === "high" ? 1.08 : 1;
+  const proven = agent.provenSkills[taskType];
+  const coldStartMultiplier = proven && proven.runs >= 3 ? 1 : 1.12;
+  const scoreMultiplier = 0.85 + (agent.score?.matchScore ?? 0.5) * 0.35;
+  return Math.max(1, historicalTokens * priorityMultiplier * coldStartMultiplier * scoreMultiplier);
+}
+
+function buildBudgetEstimate(options: {
+  request: string;
+  taskType: string;
+  selected: AgentProfile[];
+  planned: PlannedAgent[];
+  estimatedTotal: number;
+  finalTotal: number;
+  manualOverride: boolean;
+}): GovernancePlan["budgetEstimate"] {
+  const complexity = requestComplexityScore(options.request, options.taskType);
+  const historicalNeed = selectedAgentHistoricalTokens(options.taskType, options.selected);
+  const overhead = coordinationOverheadTokens(options.request, options.selected);
+  const reserveTokens = Math.round(options.finalTotal * reserveRatio(options.taskType, options.request));
+  const plannedById = new Map(options.planned.map((agent) => [agent.agentId, agent]));
+
+  return {
+    mode: options.manualOverride ? "manual_override" : "task_estimated",
+    formula:
+      "clamp_22k_120k(round_1k(selected_agent_historical_tokens * task_complexity_score + coordination_overhead_tokens)); per-agent caps allocate final budget minus reserves by historical tokens, role criticality, capability score, and cold-start uncertainty.",
+    requestTokenEstimate: roughTokenCount(options.request),
+    taskComplexityScore: Number(complexity.toFixed(3)),
+    selectedAgentHistoricalTokens: historicalNeed,
+    coordinationOverheadTokens: overhead,
+    reserveTokens,
+    estimatedTotalTokens: options.estimatedTotal,
+    finalTotalTokens: options.finalTotal,
+    agentDemand: options.selected.map((agent) => ({
+      agentId: agent.agentId,
+      name: agent.name,
+      historicalTokens: historicalTokensForAgent(agent, options.taskType),
+      priority: priority(agent),
+      demandScore: Math.round(budgetDemand(agent, options.taskType)),
+      allocatedTokens: plannedById.get(agent.agentId)?.tokenBudget ?? 0
+    }))
+  };
 }
 
 function capabilityVector(agent: AgentProfile, taskType: string): CapabilityVector {
@@ -172,13 +296,13 @@ function successCriteria(agent: AgentProfile): string[] {
   ];
 }
 
-function plannedAgent(agent: AgentProfile, totalBudget: number, taskType: string): PlannedAgent {
+function plannedAgent(agent: AgentProfile, tokenBudget: number, taskType: string): PlannedAgent {
   return {
     agentId: agent.agentId,
     name: agent.name,
     role: agent.role,
     priority: priority(agent),
-    tokenBudget: Math.round((totalBudget * budgetShare(agent)) / 100) * 100,
+    tokenBudget,
     model: modelForAgent(agent),
     capabilityVector: capabilityVector(agent, taskType),
     delegationCapabilityScope: agent.capabilities.filter((capability) =>
@@ -188,6 +312,64 @@ function plannedAgent(agent: AgentProfile, totalBudget: number, taskType: string
     blackboardTopK: 5,
     responsibilities: responsibilities(agent),
     successCriteria: successCriteria(agent)
+  };
+}
+
+function plannedAgents(agents: AgentProfile[], totalBudget: number, taskType: string, request: string): PlannedAgent[] {
+  const reserve = Math.round(totalBudget * reserveRatio(taskType, request));
+  const allocatable = Math.max(10_000, totalBudget - reserve);
+  const demands = agents.map((agent) => budgetDemand(agent, taskType));
+  const demandTotal = demands.reduce((sum, demand) => sum + demand, 0);
+
+  return agents.map((agent, index) => {
+    const tokenBudget = Math.max(2500, Math.round((allocatable * (demands[index] / demandTotal)) / 100) * 100);
+    return plannedAgent(agent, tokenBudget, taskType);
+  });
+}
+
+function rebalancePlannedAgents(
+  plan: GovernancePlan,
+  totalBudget: number,
+  overrides: Record<string, number> | undefined
+): PlannedAgent[] {
+  const reserve = Math.round(totalBudget * reserveRatio(plan.taskType, plan.request));
+  const allocatable = Math.max(10_000, totalBudget - reserve);
+  const demandById = new Map(plan.budgetEstimate.agentDemand.map((item) => [item.agentId, item.demandScore]));
+  const overriddenTotal = Object.values(overrides ?? {}).reduce((sum, value) => sum + value, 0);
+  const remainingBudget = Math.max(0, allocatable - overriddenTotal);
+  const nonOverridden = plan.agents.filter((agent) => !overrides?.[agent.agentId]);
+  const remainingDemand = nonOverridden.reduce((sum, agent) => sum + (demandById.get(agent.agentId) ?? agent.tokenBudget), 0);
+
+  return plan.agents.map((agent) => {
+    const override = overrides?.[agent.agentId];
+    if (override) {
+      return { ...agent, tokenBudget: override };
+    }
+    const demand = demandById.get(agent.agentId) ?? agent.tokenBudget;
+    const tokenBudget =
+      remainingDemand > 0 ? Math.max(2500, Math.round((remainingBudget * (demand / remainingDemand)) / 100) * 100) : agent.tokenBudget;
+    return { ...agent, tokenBudget };
+  });
+}
+
+function updateBudgetEstimateForPlan(
+  plan: GovernancePlan,
+  totalBudget: number,
+  agents: PlannedAgent[],
+  manualOverride: boolean
+): GovernancePlan["budgetEstimate"] {
+  const reserveTokens = Math.round(totalBudget * reserveRatio(plan.taskType, plan.request));
+  const agentDemand = plan.budgetEstimate.agentDemand.map((item) => ({
+    ...item,
+    allocatedTokens: agents.find((agent) => agent.agentId === item.agentId)?.tokenBudget ?? item.allocatedTokens
+  }));
+
+  return {
+    ...plan.budgetEstimate,
+    mode: manualOverride ? "manual_override" : plan.budgetEstimate.mode,
+    reserveTokens,
+    finalTotalTokens: totalBudget,
+    agentDemand
   };
 }
 
@@ -224,13 +406,16 @@ function routingCascade(agents: PlannedAgent[], totalTokenBudget: number): Routi
     },
     {
       stage: "model_assignment",
-      decision: "Use higher-accuracy reviewer profiles for critical risk gates and faster evidence workers for extraction lanes.",
+      decision: "Assign execution profiles, not hard-coded models: high-accuracy reviewer slots for critical gates and fast evidence-worker slots for extraction lanes.",
       evidence: agents.map((agent) => `${agent.name}: ${agent.model.model} because ${agent.model.reason}`)
     },
     {
       stage: "budget_assignment",
-      decision: `Use one group budget of ${totalTokenBudget.toLocaleString()} tokens with per-agent caps and manager/summarizer reserves.`,
-      evidence: agents.map((agent) => `${agent.name}: ${agent.tokenBudget.toLocaleString()} token cap`)
+      decision: `Use one task-estimated group budget of ${totalTokenBudget.toLocaleString()} tokens with per-agent caps and manager/summarizer reserves.`,
+      evidence: [
+        "Budget estimate uses request complexity, task type risk, selected agents' historical avg tokens, role criticality, and cold-start uncertainty.",
+        ...agents.map((agent) => `${agent.name}: ${agent.tokenBudget.toLocaleString()} token cap`)
+      ]
     },
     {
       stage: "memory_boundary",
@@ -252,11 +437,23 @@ export function buildGovernancePlan(options: {
   candidates: AgentProfile[];
   totalTokenBudget?: number;
 }): GovernancePlan {
-  const totalTokenBudget = options.totalTokenBudget ?? 50_000;
   const ranked = scoreAgents(options.request, options.taskType, options.candidates);
-  const agents = ranked.slice(0, 5).map((agent) => plannedAgent(agent, totalTokenBudget, options.taskType));
-  const managerReserve = Math.round(totalTokenBudget * 0.07);
-  const summarizerReserve = Math.round(totalTokenBudget * 0.07);
+  const selected = ranked.slice(0, 5);
+  const estimatedTotalBudget = estimateTotalTokenBudget(options.request, options.taskType, selected);
+  const totalTokenBudget = options.totalTokenBudget ?? estimatedTotalBudget;
+  const agents = plannedAgents(selected, totalTokenBudget, options.taskType, options.request);
+  const totalReserveRatio = reserveRatio(options.taskType, options.request);
+  const managerReserve = Math.round(totalTokenBudget * (totalReserveRatio / 2));
+  const summarizerReserve = Math.round(totalTokenBudget * (totalReserveRatio / 2));
+  const budgetEstimate = buildBudgetEstimate({
+    request: options.request,
+    taskType: options.taskType,
+    selected,
+    planned: agents,
+    estimatedTotal: estimatedTotalBudget,
+    finalTotal: totalTokenBudget,
+    manualOverride: Boolean(options.totalTokenBudget)
+  });
 
   return {
     id: `${options.runId}-governance-plan`,
@@ -265,6 +462,7 @@ export function buildGovernancePlan(options: {
     target: options.target,
     taskType: options.taskType,
     totalTokenBudget,
+    budgetEstimate,
     collaborationMode: "manager_supervised_room",
     routingCascade: routingCascade(agents, totalTokenBudget),
     dispatchWeights: DEFAULT_WEIGHTS,
@@ -298,13 +496,13 @@ export function buildGovernancePlan(options: {
       questionsForUser: [
         `I am thinking of measuring agent fit as 25% task relevance, 35% historical success, 10% recency, 15% latency, and 15% token efficiency. Should token efficiency be weighted higher for this run?`,
         `I am thinking of initializing ${agents.map((agent) => agent.name).join(", ")}. Is any specialist missing or unnecessary?`,
-        `I am thinking of a ${totalTokenBudget.toLocaleString()} token group budget with hard abort at 100%, warning at 70%, and summarization at 90%. Is that too conservative?`,
+        `I estimated a ${totalTokenBudget.toLocaleString()} token group budget from task complexity (${budgetEstimate.taskComplexityScore}), selected agents' historical token use (${budgetEstimate.selectedAgentHistoricalTokens.toLocaleString()}), coordination overhead (${budgetEstimate.coordinationOverheadTokens.toLocaleString()}), role criticality, and low-history uncertainty. Is that too conservative?`,
         `I am thinking of this routing cascade: ${routingCascade(agents, totalTokenBudget)
           .map((stage) => stage.stage)
           .join(" -> ")}. Should I remove any stage for speed?`,
         "I am thinking of MongoDB as the room state: agent_profiles for skills, tasks/groups for assignment, blackboard_entries for shared context, memory_cards for scoped memory, and audit for claim evidence. Does that collaboration model match the way you want this team to work?",
         "I am thinking of private-by-default memory, team promotion after 3 reuses, and source-linked audit for all decision claims. Should any evidence class stay private?",
-        "I am picking high-accuracy reviewer profiles for risk/critic roles, faster evidence-worker profiles for research and analysis roles, and a compact summarizer. Do you prefer speed, cost, or caution?"
+        "I am assigning execution profiles rather than hard-coded model IDs: high-accuracy reviewer slots for risk/critic roles, faster evidence-worker slots for research and analysis roles, and a compact summarizer slot. Do you prefer speed, cost, or caution?"
       ],
       assumptions: [
         "The manager should infer a useful specialist room from the user's request, then ask for approval before execution.",
@@ -336,6 +534,7 @@ export function governancePlanWrites(plan: GovernancePlan): MongoWrite[] {
         target: plan.target,
         task_type: plan.taskType,
         total_token_budget: plan.totalTokenBudget,
+        budget_estimate: plan.budgetEstimate,
         collaboration_mode: plan.collaborationMode,
         routing_cascade: plan.routingCascade,
         dispatch_weights: plan.dispatchWeights,
@@ -375,20 +574,23 @@ export function approveGovernancePlan(
 ): { plan: GovernancePlan; writes: MongoWrite[] } {
   const approvedAt = now();
   const totalTokenBudget = options.totalTokenBudget ?? plan.totalTokenBudget;
-  const agents = plan.agents.map((agent) => ({
-    ...agent,
-    tokenBudget: options.agentBudgetOverrides?.[agent.agentId] ?? agent.tokenBudget
-  }));
+  const agents =
+    options.totalTokenBudget || options.agentBudgetOverrides
+      ? rebalancePlannedAgents(plan, totalTokenBudget, options.agentBudgetOverrides)
+      : plan.agents;
+  const budgetEstimate = updateBudgetEstimateForPlan(plan, totalTokenBudget, agents, Boolean(options.totalTokenBudget));
+  const totalReserveRatio = reserveRatio(plan.taskType, plan.request);
   const updated: GovernancePlan = {
     ...plan,
     status: options.approved ? "approved" : "revisions_requested",
     totalTokenBudget,
+    budgetEstimate,
     agents,
     routingCascade: routingCascade(agents, totalTokenBudget),
     budgetPolicy: {
       ...plan.budgetPolicy,
-      managerReserve: Math.round(totalTokenBudget * 0.07),
-      summarizerReserve: Math.round(totalTokenBudget * 0.07)
+      managerReserve: Math.round(totalTokenBudget * (totalReserveRatio / 2)),
+      summarizerReserve: Math.round(totalTokenBudget * (totalReserveRatio / 2))
     },
     approvedAt: options.approved ? approvedAt : undefined,
     userNotes: options.userNotes
@@ -405,6 +607,7 @@ export function approveGovernancePlan(
           $set: {
             status: updated.status,
             total_token_budget: updated.totalTokenBudget,
+            budget_estimate: updated.budgetEstimate,
             routing_cascade: updated.routingCascade,
             budget_policy: updated.budgetPolicy,
             agents: updated.agents,

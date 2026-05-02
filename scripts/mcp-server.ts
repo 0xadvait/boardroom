@@ -6,6 +6,7 @@ import { getDemoState, resetDemoState, setDemoState } from "../lib/demo-store";
 import { approveGovernancePlan, buildGovernancePlan, governancePlanWrites } from "../lib/governance-plan";
 import { applyMongoWrites, closeMongoClient, resetMongoDemo } from "../lib/mongo";
 import { fetchSources, sourceDocument } from "../lib/live-sources";
+import { brightDataAvailable, searchWithBrightData } from "../lib/brightdata-mcp";
 import { classifyTaskType, cosineSimilarity, pseudoEmbedding } from "../lib/scoring";
 import type {
   AuditEvent,
@@ -47,7 +48,8 @@ function compactState(state: DemoState) {
       url: source.url,
       status: source.status,
       contentLength: source.contentLength ?? 0,
-      evidenceCount: source.evidence?.length ?? 0
+      evidenceCount: source.evidence?.length ?? 0,
+      extractionProvider: source.extractionProvider ?? "pending"
     })),
     budget: state.budget,
     governancePlan: state.governancePlan
@@ -56,6 +58,7 @@ function compactState(state: DemoState) {
           status: state.governancePlan.status,
           collaborationMode: state.governancePlan.collaborationMode,
           totalTokenBudget: state.governancePlan.totalTokenBudget,
+          budgetEstimate: state.governancePlan.budgetEstimate,
           routingStages: state.governancePlan.routingCascade.map((stage) => stage.stage),
           agents: state.governancePlan.agents.map((agent) => ({
             agentId: agent.agentId,
@@ -120,13 +123,15 @@ function updateAgentStatus(state: DemoState, agentId: string, patch: { status?: 
   state.candidates = state.candidates.map((agent) => (agent.agentId === agentId ? { ...agent, ...patch } : agent));
 }
 
-function sourceRefsFromInput(sources: Array<{ url: string; title?: string; note?: string }>): SourceRef[] {
+function sourceRefsFromInput(sources: Array<{ url: string; title?: string; note?: string; extractedText?: string }>): SourceRef[] {
   return sources.map((source, index) => ({
     id: `src-user-${index + 1}-${stableId(source.url).slice(0, 8)}`,
     title: source.title ?? new URL(source.url).hostname,
     url: source.url,
     note: source.note ?? "User-provided source for this Team Manager run.",
-    status: "pending"
+    status: "pending",
+    providedText: source.extractedText,
+    extractionProvider: source.extractedText ? "provided_text" : "pending"
   }));
 }
 
@@ -185,14 +190,19 @@ server.registerTool(
   {
     title: "Plan Agent Team",
     description:
-      "Act as the Team Manager: propose measurement weights, agent roster, model profiles, memory policy, token budgets, and questions for the human before any agents start.",
+      "Act as the Team Manager: propose measurement weights, agent roster, execution profiles, memory policy, task-estimated token budgets, and questions for the human before any agents start.",
     inputSchema: {
       request: z
         .string()
         .default("I want to evaluate an important decision in the most efficient way.")
         .describe("The user's high-level work request."),
       target: z.string().default("custom").describe("Target entity, topic, decision, or workstream."),
-      tokenBudget: z.number().int().positive().default(50_000).describe("Proposed group token budget."),
+      tokenBudget: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Optional manual group token budget override. Omit this so Team Manager estimates budget from the task."),
       reset: z.boolean().default(true).describe("Reset the current room before proposing a new plan.")
     }
   },
@@ -205,7 +215,6 @@ server.registerTool(
     state.target = target;
     state.taskPrompt = request;
     state.taskType = classifyTaskType(request);
-    state.budget.total = tokenBudget;
     const plan = buildGovernancePlan({
       runId: state.runId,
       request,
@@ -214,11 +223,13 @@ server.registerTool(
       candidates: state.candidates,
       totalTokenBudget: tokenBudget
     });
+    state.budget.total = plan.totalTokenBudget;
     state.governancePlan = plan;
     state = await applyAndStore(state, governancePlanWrites(plan));
     logEvent("manager.plan.proposed", {
       planId: plan.id,
-      tokenBudget,
+      tokenBudget: plan.totalTokenBudget,
+      budgetMode: tokenBudget ? "manual_override" : "task_estimated",
       questions: plan.teamManager.questionsForUser,
       agents: plan.agents.map((agent) => ({
         name: agent.name,
@@ -485,18 +496,95 @@ server.registerTool(
 );
 
 server.registerTool(
+  "team_manager_find_sources",
+  {
+    title: "Find Room Sources",
+    description:
+      "Use Bright Data MCP search to discover source URLs for the current room, then optionally register them for ingestion. This is generic search, not a scenario-specific source pack.",
+    inputSchema: {
+      query: z.string().optional().describe("Search query. Defaults to the current room request."),
+      engine: z.enum(["google", "bing", "yandex"]).default("google"),
+      geoLocation: z.string().length(2).default("us").describe("Two-letter country code for search localization."),
+      maxResults: z.number().int().min(1).max(10).default(6),
+      register: z.boolean().default(true).describe("Replace current room sources with the search results.")
+    }
+  },
+  async ({ query, engine, geoLocation, maxResults, register }) => {
+    const state = getDemoState();
+    const searchQuery = query ?? state.taskPrompt;
+
+    if (!brightDataAvailable()) {
+      return toolJson({
+        message: "Bright Data MCP search is not configured for Team Manager. Set BRIGHTDATA_API_TOKEN in the team-manager MCP env.",
+        provider: "brightdata_mcp",
+        configured: false,
+        nextTool: "team_manager_set_sources"
+      });
+    }
+
+    const results = await searchWithBrightData({
+      query: searchQuery,
+      engine,
+      geoLocation,
+      maxResults
+    });
+
+    const foundSources: SourceRef[] = results.map((result, index) => ({
+      id: `src-search-${index + 1}-${stableId(result.url).slice(0, 8)}`,
+      title: result.title,
+      url: result.url,
+      note: result.description ? `Bright Data search result for "${searchQuery}": ${result.description}` : `Bright Data search result for "${searchQuery}".`,
+      status: "pending",
+      extractionProvider: "pending"
+    }));
+
+    if (register) {
+      state.sources = foundSources;
+      await writeAuditEvent(state, {
+        event_type: "sources_searched",
+        provider: "brightdata_mcp",
+        query: searchQuery,
+        source_count: state.sources.length,
+        sources: state.sources.map((source) => ({ id: source.id, title: source.title, url: source.url }))
+      });
+      setDemoState(state);
+    }
+
+    logEvent("sources.searched.brightdata", {
+      query: searchQuery,
+      count: foundSources.length,
+      registered: register
+    });
+
+    return toolJson({
+      message: register
+        ? "Bright Data MCP search results registered. Call team_manager_ingest_sources to scrape and store evidence."
+        : "Bright Data MCP search results returned but not registered.",
+      provider: "brightdata_mcp",
+      registered: register,
+      nextTool: register ? "team_manager_ingest_sources" : "team_manager_set_sources",
+      sources: foundSources
+    });
+  }
+);
+
+server.registerTool(
   "team_manager_set_sources",
   {
     title: "Set Room Sources",
     description:
-      "Register arbitrary source URLs for the current room. These are the sources the host agent wants Team Manager to ingest and govern; no scenario-specific source pack is assumed.",
+      "Register arbitrary source URLs for the current room. The host can also pass extractedText from another scraper such as Bright Data MCP; no scenario-specific source pack is assumed.",
     inputSchema: {
       sources: z
         .array(
           z.object({
             url: z.string().url(),
             title: z.string().optional(),
-            note: z.string().optional()
+            note: z.string().optional(),
+            extractedText: z
+              .string()
+              .optional()
+              .describe("Optional already-extracted page text or markdown, for example from Bright Data MCP.")
           })
         )
         .min(1)
@@ -529,10 +617,13 @@ server.registerTool(
   {
     title: "Ingest Room Sources",
     description:
-      "Fetch the current room's source URLs, extract generic evidence snippets from the task query, and store them in MongoDB source_documents.",
-    inputSchema: {}
+      "Fetch the current room's source URLs, extract generic evidence snippets from the task query, and store them in MongoDB source_documents. In auto mode, native fetch falls back to Bright Data MCP when extraction is thin.",
+    inputSchema: {
+      extractionProvider: z.enum(["auto", "native", "brightdata"]).default("auto"),
+      fallbackToNative: z.boolean().default(true).describe("When Bright Data fails, fall back to native fetch.")
+    }
   },
-  async () => {
+  async ({ extractionProvider, fallbackToNative }) => {
     const state = getDemoState();
     if (state.sources.length === 0) {
       return toolJson({
@@ -541,7 +632,10 @@ server.registerTool(
       });
     }
 
-    const fetched = await fetchSources(state.sources, state.taskPrompt);
+    const fetched = await fetchSources(state.sources, state.taskPrompt, {
+      mode: extractionProvider,
+      fallbackToNative
+    });
     state.sources = fetched;
     await applyAndStore(state, [
       {
@@ -556,13 +650,15 @@ server.registerTool(
           _id: scopedId(state, "audit-sources-ingested"),
           task_id: state.taskId,
           event_type: "sources_ingested",
+          extraction_provider: extractionProvider,
           fetched: fetched.filter((source) => source.status === "fetched").length,
           evidence_count: fetched.reduce((sum, source) => sum + source.evidence.length, 0),
           created_at: new Date()
         }
       }
     ]);
-    logEvent("sources.ingested.generic", {
+    logEvent("sources.ingested", {
+      extractionProvider,
       fetched: fetched.filter((source) => source.status === "fetched").length,
       evidenceSnippets: fetched.reduce((sum, source) => sum + source.evidence.length, 0)
     });
@@ -574,6 +670,8 @@ server.registerTool(
         title: source.title,
         url: source.url,
         status: source.status,
+        extractionProvider: source.extractionProvider,
+        extractionWarnings: source.extractionWarnings ?? [],
         evidenceCount: source.evidence?.length ?? 0,
         evidence: source.evidence
       }))

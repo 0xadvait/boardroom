@@ -69,12 +69,16 @@ export interface SourceRef {
   excerpt?: string;
   error?: string;
   evidence?: SourceEvidence[];
+  providedText?: string;
+  extractionProvider?: "pending" | "provided_text" | "native_fetch" | "brightdata_mcp";
+  extractionWarnings?: string[];
 }
 
 export interface SourceEvidence {
   label: string;
   snippet: string;
   confidence: number;
+  provider?: "provided_text" | "native_fetch" | "brightdata_mcp";
 }
 
 export interface BlackboardEntry {
@@ -245,6 +249,25 @@ export interface GovernancePlan {
   target: string;
   taskType: string;
   totalTokenBudget: number;
+  budgetEstimate: {
+    mode: "task_estimated" | "manual_override";
+    formula: string;
+    requestTokenEstimate: number;
+    taskComplexityScore: number;
+    selectedAgentHistoricalTokens: number;
+    coordinationOverheadTokens: number;
+    reserveTokens: number;
+    estimatedTotalTokens: number;
+    finalTotalTokens: number;
+    agentDemand: Array<{
+      agentId: string;
+      name: string;
+      historicalTokens: number;
+      priority: PlannedAgent["priority"];
+      demandScore: number;
+      allocatedTokens: number;
+    }>;
+  };
   collaborationMode: "single_agent" | "manager_supervised_room" | "parallel_specialists";
   routingCascade: RoutingStage[];
   dispatchWeights: {
