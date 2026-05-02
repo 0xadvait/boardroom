@@ -933,6 +933,30 @@ td small {
   max-width: 900px;
 }
 
+.case-context {
+  align-items: center;
+  background: #f4f8f1;
+  border: 1px solid #dfe8da;
+  border-radius: 7px;
+  display: inline-flex;
+  gap: 10px;
+  margin-top: 12px;
+  min-height: 36px;
+  padding: 0 10px;
+}
+
+.case-context strong {
+  color: var(--green-dark);
+  font-size: 12px;
+}
+
+.case-context span {
+  color: #465246;
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: none;
+}
+
 .workflow-layout {
   display: grid;
   gap: 14px;

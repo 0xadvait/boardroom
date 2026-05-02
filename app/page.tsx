@@ -256,13 +256,11 @@ export default function Page() {
   }
 
   const percent = Math.round((state.budget.consumed / state.budget.total) * 100);
-  const selectedNames = state.selectedAgents.filter((agent) => agent.agentId !== "agent-summarizer").map((agent) => agent.name);
   const lastCheckpoint = state.checkpoints[0];
   const selectedSpecialists = state.selectedAgents.filter((agent) => agent.agentId !== "agent-summarizer");
   const fetchedSources = state.sources.filter((source) => source.status === "fetched").length;
   const evidenceCount = state.sources.reduce((sum, source) => sum + (source.evidence?.length ?? 0), 0);
   const currentFinding = state.blackboard[0];
-  const topCandidates = state.candidates.filter((agent) => agent.selected).slice(0, 5);
   const workflowSteps = [
     {
       label: "Intake",
@@ -310,7 +308,7 @@ export default function Page() {
           <div className="brand-mark" aria-hidden="true">B</div>
           <div>
             <h1>BoardRoom</h1>
-            <p>Governed multi-agent vendor diligence on MongoDB Atlas.</p>
+            <p>MongoDB control plane for multi-agent work.</p>
           </div>
         </div>
         <div className="header-actions">
@@ -324,9 +322,16 @@ export default function Page() {
 
       <section className="case-hero">
         <div className="case-copy">
-          <span>Vendor Diligence Case</span>
-          <h2>{state.vendor} analytics review</h2>
-          <p>{state.taskPrompt}</p>
+          <span>Agent Governance Room</span>
+          <h2>Control the work, not just the prompts.</h2>
+          <p>
+            Vendor diligence is the live workload. BoardRoom decides which agents should work, what evidence they can see,
+            when context becomes shared, how the group spends tokens, and how a failed agent resumes from MongoDB.
+          </p>
+          <div className="case-context">
+            <strong>Live case</strong>
+            <span>{state.vendor} analytics procurement review</span>
+          </div>
         </div>
         <div className="command-buttons">
           <ControlButton icon={<Users size={16} />} label="Spawn" onClick={() => post("/api/demo/spawn")} disabled={busy || state.status !== "idle"} variant="primary" />
@@ -342,7 +347,7 @@ export default function Page() {
         <aside className="workflow-rail">
           <div className="rail-title">
             <Terminal size={18} />
-            <span>Workflow</span>
+            <span>Governance Loop</span>
           </div>
           <div className="step-list">
             {workflowSteps.map((step, index) => (
@@ -357,16 +362,16 @@ export default function Page() {
           </div>
           <div className="theme-stack">
             <article>
-              <span>Prolonged Coordination</span>
-              <strong>Checkpointed steps survive restart.</strong>
+              <span>What BoardRoom Adds</span>
+              <strong>Agent selection uses track record, not prompt descriptions.</strong>
             </article>
             <article>
-              <span>Multi-Agent Collaboration</span>
-              <strong>Specialists coordinate through a shared blackboard.</strong>
+              <span>Shared Operating State</span>
+              <strong>Findings, memory, checkpoints, and budget live in Atlas.</strong>
             </article>
             <article>
-              <span>Adaptive Retrieval</span>
-              <strong>Live sources and memory use vector filters.</strong>
+              <span>Failure Is Expected</span>
+              <strong>Kill an agent and it continues from its MongoDB checkpoint.</strong>
             </article>
           </div>
         </aside>
@@ -375,10 +380,10 @@ export default function Page() {
           <section className="stage-panel">
             <div>
               <span>Current Stage</span>
-              <h2>{state.status === "complete" ? "Decision ready" : activeWorkflow.label}</h2>
+              <h2>{state.status === "complete" ? "Governed decision ready" : activeWorkflow.label}</h2>
               <p>
                 {state.status === "idle"
-                  ? "Start by spawning the diligence board. BoardRoom will rank the specialist pool, fetch live evidence, and write the case state to Atlas."
+                  ? "Start the room. BoardRoom ranks the specialist pool, fetches live evidence, writes case state to Atlas, then governs the run through budget, memory, and recovery events."
                   : currentFinding?.content ?? activeWorkflow.detail}
               </p>
             </div>
@@ -419,7 +424,7 @@ export default function Page() {
               <div className="panel-title split">
                 <span>
                   <FileSearch size={18} />
-                  Live Evidence
+                  Workload Evidence
                 </span>
                 <small>{fetchedSources}/3 fetched</small>
               </div>
@@ -444,7 +449,7 @@ export default function Page() {
               <div className="panel-title split">
                 <span>
                   <BrainCircuit size={18} />
-                  Blackboard
+                  Shared Blackboard
                 </span>
                 <small>{state.blackboard.length} findings</small>
               </div>
@@ -472,7 +477,7 @@ export default function Page() {
 
           <section className="decision-workflow-panel">
             <div className="decision-block">
-              <span>Recommendation</span>
+              <span>Governed Output</span>
               <strong>{state.finalDecision?.verdict ?? "Pending"}</strong>
               <p>{state.finalDecision?.rationale ?? "The decision is emitted after live evidence, blackboard subscriptions, budget cascade, and checkpoint resume complete."}</p>
             </div>
