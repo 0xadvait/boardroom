@@ -32,10 +32,27 @@ npm install
 npm run mcp
 ```
 
-For MCP client configs, prefer calling the server directly so stdio stays protocol-clean:
+For MCP client configs, call the server directly so stdout stays protocol-clean:
 
 ```bash
 ./node_modules/.bin/tsx scripts/mcp-server.ts
+```
+
+Example MCP server entry:
+
+```json
+{
+  "mcpServers": {
+    "boardroom": {
+      "command": "/Users/advaitjayant/hackathon/team-manager/node_modules/.bin/tsx",
+      "args": ["/Users/advaitjayant/hackathon/team-manager/scripts/mcp-server.ts"],
+      "env": {
+        "MONGODB_URI": "mongodb+srv://advait:<URL_ENCODED_PASSWORD>@cluster0.1hulng.mongodb.net/?appName=Cluster0",
+        "BOARDROOM_DB": "boardroom"
+      }
+    }
+  }
+}
 ```
 
 Available MCP tools:
@@ -52,6 +69,8 @@ Terminal demo harness:
 ```bash
 npm run harness -- "I want to due diligence PostHog as a vendor for my B2B SaaS business in the most efficient way."
 ```
+
+Full demo operator notes are in [docs/mcp-demo.md](docs/mcp-demo.md).
 
 ## Atlas Sandbox
 
@@ -99,6 +118,8 @@ The harness prints the governance events that an MCP client would trigger:
 5. Trigger 70% warning and 90% summarizer.
 6. Kill and resume `ContractRedFlags` from MongoDB checkpoint.
 7. Emit a source-linked governed output.
+
+The terminal trace deliberately shows the control-plane internals: candidate scores, context policy, source ingestion, blackboard entries, memory visibility, budget bars, checkpoints, and audit edges.
 
 ## Submission Summary
 

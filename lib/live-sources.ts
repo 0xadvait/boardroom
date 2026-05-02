@@ -66,8 +66,8 @@ function findSnippet(text: string, patterns: string[]): string | null {
   }
 
   const first = Math.min(...indexes);
-  const start = Math.max(0, first - 120);
-  const end = Math.min(text.length, first + 260);
+  const start = first;
+  const end = Math.min(text.length, first + 320);
   return text.slice(start, end).trim();
 }
 
