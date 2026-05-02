@@ -11,7 +11,7 @@ BoardRoom demonstrates four primitives for production multi-agent systems:
 - Layered memory: private, team, and global memory cards with filtered Atlas Vector Search.
 - Token-budget governance: group-level budget warning at 70%, summarizer spawn at 90%, configured action at 100%.
 
-The live workflow evaluates PostHog as an analytics vendor for a regulated B2B SaaS buyer. The app is a Next.js dashboard with MongoDB driver API routes. It runs in fallback replay mode without credentials and switches to Atlas mode when `MONGODB_URI` is available.
+The live workflow evaluates PostHog as an analytics vendor for a regulated B2B SaaS buyer. The app is a Next.js dashboard with MongoDB driver API routes. It fetches public vendor pages during the demo, stores extracted evidence in MongoDB, and switches to Atlas mode when `MONGODB_URI` is available.
 
 ## Hackathon Alignment
 
@@ -65,8 +65,8 @@ npm run seed
 
 Use the dashboard controls:
 
-1. `Spawn`: ranks 12 agents and selects the top 5 by the weighted dispatch formula.
-2. `Advance`: steps through blackboard posts, vector subscription, 70% warning, 90% summarizer, kill, resume, and decision.
+1. `Spawn`: ranks 12 agents, selects the top 5 by the weighted dispatch formula, fetches public vendor pages, and writes `source_documents` to MongoDB.
+2. `Advance`: turns the fetched source evidence into blackboard posts, vector subscription, 70% warning, 90% summarizer, kill, resume, and decision.
 3. `60s Run`: plays the whole judge-facing sequence.
 4. `Kill` and `Restart`: manually trigger the ContractRedFlags checkpoint-resume beat.
 
@@ -91,6 +91,7 @@ Use the dashboard controls:
 - `memory_cards`
 - `groups`
 - `audit`
+- `source_documents`
 
 Atlas Vector Search indexes:
 
@@ -100,7 +101,7 @@ Atlas Vector Search indexes:
 
 ## Demo Evidence
 
-The demo uses public source URLs for the visible vendor-evaluation claims:
+The demo fetches these public source URLs live and stores extracted snippets in MongoDB before agents write findings:
 
 - PostHog Trust Center: `https://trust.posthog.com/`
 - PostHog Pricing: `https://posthog.com/pricing`

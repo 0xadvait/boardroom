@@ -63,6 +63,18 @@ export interface SourceRef {
   title: string;
   url: string;
   note: string;
+  status?: "pending" | "fetched" | "failed";
+  fetchedAt?: string;
+  contentLength?: number;
+  excerpt?: string;
+  error?: string;
+  evidence?: SourceEvidence[];
+}
+
+export interface SourceEvidence {
+  label: string;
+  snippet: string;
+  confidence: number;
 }
 
 export interface BlackboardEntry {

@@ -57,7 +57,7 @@ export async function ensureCoreCollectionsAndIndexes(): Promise<void> {
     });
   }
 
-  const collectionNames = ["agent_profiles", "tasks", "blackboard_entries", "memory_cards", "groups", "audit"];
+  const collectionNames = ["agent_profiles", "tasks", "blackboard_entries", "memory_cards", "groups", "audit", "source_documents"];
   for (const name of collectionNames) {
     if (!(await collectionExists(db, name))) {
       await db.createCollection(name);
@@ -71,6 +71,8 @@ export async function ensureCoreCollectionsAndIndexes(): Promise<void> {
     db.collection("blackboard_entries").createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 }),
     db.collection("blackboard_entries").createIndex({ task_id: 1, visibility: 1, entry_type: 1 }),
     db.collection("memory_cards").createIndex({ visibility: 1, owner_agent_id: 1, team_id: 1 }),
+    db.collection("source_documents").createIndex({ task_id: 1, source_id: 1 }),
+    db.collection("source_documents").createIndex({ fetched_at: -1 }),
     db.collection("groups").createIndex({ team_id: 1 }),
     db.collection("audit").createIndex({ task_id: 1 }),
     db.collection("audit").createIndex({ demo_run_id: 1 })
@@ -161,7 +163,7 @@ export async function resetMongoDemo(state: DemoState): Promise<{ connected: boo
     }
 
     await ensureCoreCollectionsAndIndexes();
-    const collections = ["agent_profiles", "tasks", "blackboard_entries", "memory_cards", "groups", "audit"];
+    const collections = ["agent_profiles", "tasks", "blackboard_entries", "memory_cards", "groups", "audit", "source_documents"];
     await Promise.all(collections.map((name) => db.collection(name).deleteMany({ demo_scope: DEMO_SCOPE })));
 
     state.mongo.mode = "atlas";

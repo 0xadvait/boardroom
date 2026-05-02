@@ -258,18 +258,62 @@ export default function Page() {
   const percent = Math.round((state.budget.consumed / state.budget.total) * 100);
   const selectedNames = state.selectedAgents.filter((agent) => agent.agentId !== "agent-summarizer").map((agent) => agent.name);
   const lastCheckpoint = state.checkpoints[0];
+  const selectedSpecialists = state.selectedAgents.filter((agent) => agent.agentId !== "agent-summarizer");
+  const fetchedSources = state.sources.filter((source) => source.status === "fetched").length;
+  const evidenceCount = state.sources.reduce((sum, source) => sum + (source.evidence?.length ?? 0), 0);
+  const currentFinding = state.blackboard[0];
+  const topCandidates = state.candidates.filter((agent) => agent.selected).slice(0, 5);
+  const workflowSteps = [
+    {
+      label: "Intake",
+      detail: "Analytics vendor review opened",
+      done: true
+    },
+    {
+      label: "Capability Dispatch",
+      detail: "MongoDB ranks the specialist pool",
+      done: state.selectedAgents.length > 0
+    },
+    {
+      label: "Live Evidence",
+      detail: "Public vendor pages fetched into Atlas",
+      done: fetchedSources > 0
+    },
+    {
+      label: "Collaborative Review",
+      detail: "Agents publish and subscribe through the blackboard",
+      done: state.blackboard.length >= 3
+    },
+    {
+      label: "Budget Governance",
+      detail: "70% warning and 90% summarizer cascade",
+      done: state.budget.warnedAt70 || state.budget.summarizedAt90
+    },
+    {
+      label: "Recovery",
+      detail: "Kill and resume ContractRedFlags from checkpoint",
+      done: state.status === "resumed" || state.status === "complete"
+    },
+    {
+      label: "Decision",
+      detail: "Every claim links back to evidence",
+      done: state.status === "complete"
+    }
+  ];
+  const activeStep = Math.max(0, workflowSteps.findIndex((step) => !step.done));
+  const activeWorkflow = workflowSteps[activeStep] ?? workflowSteps[workflowSteps.length - 1];
 
   return (
-    <main className="dashboard-shell">
-      <header className="topbar">
+    <main className="workflow-shell">
+      <header className="workflow-header">
         <div className="brand-block">
           <div className="brand-mark" aria-hidden="true">B</div>
           <div>
             <h1>BoardRoom</h1>
-            <p>MongoDB governance for live multi-agent vendor evaluation.</p>
+            <p>Governed multi-agent vendor diligence on MongoDB Atlas.</p>
           </div>
         </div>
-        <div className="run-meta">
+        <div className="header-actions">
           <span className={state.mongo.mode === "atlas" ? "mongo-mode atlas" : "mongo-mode replay"}>
             <Database size={15} />
             {state.mongo.mode === "atlas" ? `Atlas · ${state.mongo.dbName}` : "Replay mode"}
@@ -278,212 +322,193 @@ export default function Page() {
         </div>
       </header>
 
-      <section className="command-strip">
-        <div className="task-brief">
-          <span>Vendor evaluation</span>
-          <strong>{state.vendor}</strong>
+      <section className="case-hero">
+        <div className="case-copy">
+          <span>Vendor Diligence Case</span>
+          <h2>{state.vendor} analytics review</h2>
           <p>{state.taskPrompt}</p>
         </div>
         <div className="command-buttons">
-          <ControlButton
-            icon={<Users size={16} />}
-            label="Spawn"
-            onClick={() => post("/api/demo/spawn")}
-            disabled={busy || state.status !== "idle"}
-            variant="primary"
-          />
+          <ControlButton icon={<Users size={16} />} label="Spawn" onClick={() => post("/api/demo/spawn")} disabled={busy || state.status !== "idle"} variant="primary" />
           <ControlButton icon={<Play size={16} />} label="Advance" onClick={() => post("/api/demo/tick")} disabled={busy} />
           <ControlButton icon={<OctagonX size={16} />} label="Kill" onClick={() => post("/api/demo/kill")} disabled={busy} variant="danger" />
           <ControlButton icon={<RefreshCcw size={16} />} label="Restart" onClick={() => post("/api/demo/restart")} disabled={busy} />
-          <ControlButton icon={<Activity size={16} />} label="60s Run" onClick={runReplay} disabled={busy} />
+          <ControlButton icon={<Activity size={16} />} label="Run Demo" onClick={runReplay} disabled={busy} />
           <ControlButton icon={<RotateCcw size={16} />} label="Reset" onClick={() => post("/api/demo/reset")} disabled={busy} />
         </div>
       </section>
 
-      <section className="kpi-grid">
-        <div className="kpi">
-          <ShieldCheck size={19} />
-          <div>
-            <span>Selected agents</span>
-            <strong>{selectedNames.length || 0}/5</strong>
+      <section className="workflow-layout">
+        <aside className="workflow-rail">
+          <div className="rail-title">
+            <Terminal size={18} />
+            <span>Workflow</span>
           </div>
-        </div>
-        <div className="kpi">
-          <BrainCircuit size={19} />
-          <div>
-            <span>Blackboard entries</span>
-            <strong>{state.blackboard.length}</strong>
+          <div className="step-list">
+            {workflowSteps.map((step, index) => (
+              <article className={step.done ? "workflow-step done" : index === activeStep ? "workflow-step active" : "workflow-step"} key={step.label}>
+                <span>{index + 1}</span>
+                <div>
+                  <strong>{step.label}</strong>
+                  <p>{step.detail}</p>
+                </div>
+              </article>
+            ))}
           </div>
-        </div>
-        <div className="kpi">
-          <GitBranch size={19} />
-          <div>
-            <span>Checkpoints</span>
-            <strong>{state.checkpoints.length}</strong>
+          <div className="theme-stack">
+            <article>
+              <span>Prolonged Coordination</span>
+              <strong>Checkpointed steps survive restart.</strong>
+            </article>
+            <article>
+              <span>Multi-Agent Collaboration</span>
+              <strong>Specialists coordinate through a shared blackboard.</strong>
+            </article>
+            <article>
+              <span>Adaptive Retrieval</span>
+              <strong>Live sources and memory use vector filters.</strong>
+            </article>
           </div>
-        </div>
-        <div className="kpi">
-          <Mic2 size={19} />
-          <div>
-            <span>Voice events</span>
-            <strong>{state.voiceEvents.length}</strong>
-          </div>
-        </div>
-      </section>
+        </aside>
 
-      <section className="theme-strip" aria-label="Hackathon theme alignment">
-        <article>
-          <span>Prolonged Coordination</span>
-          <strong>MongoDB checkpoints survive kill and restart.</strong>
-        </article>
-        <article>
-          <span>Multi-Agent Collaboration</span>
-          <strong>Specialists share source-backed findings through a blackboard.</strong>
-        </article>
-        <article>
-          <span>Adaptive Retrieval</span>
-          <strong>Vector search plus visibility filters routes only relevant memory.</strong>
-        </article>
-      </section>
-
-      <section className="main-grid">
-        <div className="left-stack">
-          <section className="panel dispatch-panel">
-            <div className="panel-title split">
-              <span>
-                <FileSearch size={18} />
-                Capability Dispatch
-              </span>
-              <div className="formula">
-                {scoreTerms.map((term) => (
-                  <code key={term.label}>
-                    {term.weight}·{term.label}
-                  </code>
-                ))}
-              </div>
+        <section className="review-workspace">
+          <section className="stage-panel">
+            <div>
+              <span>Current Stage</span>
+              <h2>{state.status === "complete" ? "Decision ready" : activeWorkflow.label}</h2>
+              <p>
+                {state.status === "idle"
+                  ? "Start by spawning the diligence board. BoardRoom will rank the specialist pool, fetch live evidence, and write the case state to Atlas."
+                  : currentFinding?.content ?? activeWorkflow.detail}
+              </p>
             </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Agent</th>
-                    <th>Rank</th>
-                    <th>Score</th>
-                    <th>Prompt</th>
-                    <th>History</th>
-                    <th>Time</th>
-                    <th>Token</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {state.candidates.map((agent) => (
-                    <AgentRow agent={agent} key={agent.agentId} />
-                  ))}
-                </tbody>
-              </table>
+            <div className="stage-metrics">
+              <article>
+                <span>Agents</span>
+                <strong>{selectedSpecialists.length}/5</strong>
+              </article>
+              <article>
+                <span>Evidence</span>
+                <strong>{evidenceCount}</strong>
+              </article>
+              <article>
+                <span>Budget</span>
+                <strong>{percent}%</strong>
+              </article>
             </div>
           </section>
 
-          <section className="panel agents-panel">
-            <div className="panel-title">
-              <Users size={18} />
-              <span>Live Agents</span>
-            </div>
-            <div className="agent-grid">
-              {state.selectedAgents.map((agent) => (
-                <article className={`agent-tile ${agent.status}`} key={agent.agentId}>
+          <section className="specialist-strip">
+            {selectedSpecialists.length > 0 ? (
+              selectedSpecialists.map((agent) => (
+                <article className={`specialist-card ${agent.status}`} key={agent.agentId}>
                   <header>
                     <strong>{agent.name}</strong>
                     <StatusPill status={agent.status} />
                   </header>
                   <p>{agent.currentStep}</p>
-                  <div className="mini-meter">
-                    <span style={{ width: `${Math.min(100, (agent.tokensUsed / 9000) * 100)}%` }} />
-                  </div>
                 </article>
-              ))}
-              {state.selectedAgents.length === 0 ? (
-                <div className="empty-panel">Click Spawn to select the five specialists from the 12-agent registry.</div>
-              ) : null}
+              ))
+            ) : (
+              <div className="empty-panel">The specialist board appears here after capability dispatch.</div>
+            )}
+          </section>
+
+          <section className="evidence-grid">
+            <div className="workflow-panel">
+              <div className="panel-title split">
+                <span>
+                  <FileSearch size={18} />
+                  Live Evidence
+                </span>
+                <small>{fetchedSources}/3 fetched</small>
+              </div>
+              <div className="source-list">
+                {state.sources.map((source) => (
+                  <article className={`source-card ${source.status ?? "pending"}`} key={source.id}>
+                    <header>
+                      <strong>{source.title}</strong>
+                      <code>{source.status ?? "pending"}</code>
+                    </header>
+                    <p>{source.evidence?.[0]?.snippet ?? source.note}</p>
+                    <footer>
+                      <span>{source.contentLength ? `${source.contentLength.toLocaleString()} chars` : "not fetched yet"}</span>
+                      <span>{source.evidence?.length ?? 0} snippets</span>
+                    </footer>
+                  </article>
+                ))}
+              </div>
+            </div>
+
+            <div className="workflow-panel">
+              <div className="panel-title split">
+                <span>
+                  <BrainCircuit size={18} />
+                  Blackboard
+                </span>
+                <small>{state.blackboard.length} findings</small>
+              </div>
+              <div className="blackboard-feed clean-feed">
+                {state.blackboard.map((entry) => (
+                  <article className={`blackboard-entry ${entry.entryType}`} key={entry.id}>
+                    <header>
+                      <span>{entry.agentName}</span>
+                      <div>
+                        <code>{entry.entryType}</code>
+                        <code>{entry.visibility}</code>
+                      </div>
+                    </header>
+                    <p>{entry.content}</p>
+                    <footer>
+                      <span>reuse {entry.reuseCount}</span>
+                      <span>{entry.sourceIds.join(", ") || "team summary"}</span>
+                    </footer>
+                  </article>
+                ))}
+                {state.blackboard.length === 0 ? <div className="empty-panel">Findings appear after the first workflow advance.</div> : null}
+              </div>
             </div>
           </section>
-        </div>
 
-        <div className="center-stack">
+          <section className="decision-workflow-panel">
+            <div className="decision-block">
+              <span>Recommendation</span>
+              <strong>{state.finalDecision?.verdict ?? "Pending"}</strong>
+              <p>{state.finalDecision?.rationale ?? "The decision is emitted after live evidence, blackboard subscriptions, budget cascade, and checkpoint resume complete."}</p>
+            </div>
+            <div className="checkpoint-compact">
+              <span>Latest checkpoint</span>
+              <strong>{lastCheckpoint?.agentName ?? "None yet"}</strong>
+              <p>{lastCheckpoint?.partialOutput ?? "Agent checkpoints will appear here as MongoDB performance records."}</p>
+            </div>
+          </section>
+        </section>
+
+        <aside className="audit-rail">
           <BudgetMeter state={state} />
-
-          <section className="panel blackboard-panel">
-            <div className="panel-title split">
-              <span>
-                <BrainCircuit size={18} />
-                Shared Blackboard
-              </span>
-              <small>change streams + vector subscription</small>
-            </div>
-            <div className="blackboard-feed">
-              {state.blackboard.map((entry) => (
-                <article className={`blackboard-entry ${entry.entryType}`} key={entry.id}>
-                  <header>
-                    <span>{entry.agentName}</span>
-                    <div>
-                      <code>{entry.entryType}</code>
-                      <code>{entry.visibility}</code>
-                    </div>
-                  </header>
-                  <p>{entry.content}</p>
-                  <footer>
-                    <span>reuse {entry.reuseCount}</span>
-                    <span>{entry.sourceIds.length ? entry.sourceIds.join(", ") : "generated summary"}</span>
-                  </footer>
-                </article>
-              ))}
-              {state.blackboard.length === 0 ? <div className="empty-panel">Blackboard is waiting for agent findings.</div> : null}
-            </div>
-          </section>
-
-          <section className="panel subscriptions-panel">
-            <div className="panel-title">
-              <Activity size={18} />
-              <span>Auto-Subscriptions</span>
-            </div>
-            <div className="subscription-list">
-              {state.subscriptions.map((subscription) => (
-                <article key={subscription.id}>
-                  <strong>{subscription.toAgentName}</strong>
-                  <p>{subscription.reason}</p>
-                  <span>vector score {subscription.vectorScore.toFixed(3)}</span>
-                </article>
-              ))}
-              {state.subscriptions.length === 0 ? <div className="empty-panel">No subscriptions yet.</div> : null}
-            </div>
-          </section>
-        </div>
-
-        <div className="right-stack">
-          <section className="panel mongo-panel">
+          <section className="workflow-panel">
             <div className="panel-title split">
               <span>
                 <Database size={18} />
-                MongoDB Writes
+                Atlas Writes
               </span>
-              <small>{state.mongo.mode === "atlas" ? "live sandbox" : "fallback replay"}</small>
+              <small>{state.mongo.mode === "atlas" ? "live sandbox" : "fallback"}</small>
             </div>
-            <div className="mongo-feed">
-              {state.mongoDocs.map((event) => (
+            <div className="mongo-feed compact-feed">
+              {state.mongoDocs.slice(0, 8).map((event) => (
                 <MongoDoc event={event} key={event.id} />
               ))}
-              {state.mongoDocs.length === 0 ? <div className="empty-panel">MongoDB writes will materialize here.</div> : null}
+              {state.mongoDocs.length === 0 ? <div className="empty-panel">MongoDB writes appear here.</div> : null}
             </div>
           </section>
 
-          <section className="panel audit-panel">
+          <section className="workflow-panel">
             <div className="panel-title">
               <GitBranch size={18} />
-              <span>Audit Graph</span>
+              <span>Audit Trail</span>
             </div>
-            <div className="audit-list">
-              {state.audit.map((event) => (
+            <div className="audit-list compact-feed">
+              {state.audit.slice(0, 5).map((event) => (
                 <article key={event.id}>
                   <strong>{event.agentName}</strong>
                   <p>{event.claim}</p>
@@ -493,71 +518,10 @@ export default function Page() {
                   </footer>
                 </article>
               ))}
-              {state.audit.length === 0 ? <div className="empty-panel">Claims will link to blackboard entries and sources.</div> : null}
+              {state.audit.length === 0 ? <div className="empty-panel">Claims link back to evidence as the review runs.</div> : null}
             </div>
           </section>
-        </div>
-      </section>
-
-      <section className="bottom-grid">
-        <section className="panel timeline-panel">
-          <div className="panel-title">
-            <Terminal size={18} />
-            <span>Demo Timeline</span>
-          </div>
-          <div className="timeline-list">
-            {state.timeline.map((event) => (
-              <article key={event.id}>
-                <LayerBadge layer={event.layer} />
-                <div>
-                  <header>
-                    <strong>{event.label}</strong>
-                    <span>{shortTime(event.createdAt)}</span>
-                  </header>
-                  <p>{event.detail}</p>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="panel checkpoint-panel">
-          <div className="panel-title">
-            <RefreshCcw size={18} />
-            <span>Checkpoint Resume</span>
-          </div>
-          {lastCheckpoint ? (
-            <div className="checkpoint-body">
-              <strong>{lastCheckpoint.agentName}</strong>
-              <p>{lastCheckpoint.partialOutput}</p>
-              <code>{lastCheckpoint.mongoChangeStreamResumeToken}</code>
-              <span>
-                step {lastCheckpoint.stepIndex} · {lastCheckpoint.outcome}
-              </span>
-            </div>
-          ) : (
-            <div className="empty-panel">No checkpoint yet.</div>
-          )}
-        </section>
-
-        <section className="panel decision-panel">
-          <div className="panel-title">
-            <CheckCircle2 size={18} />
-            <span>Final Decision</span>
-          </div>
-          {state.finalDecision ? (
-            <div className="decision-body">
-              <strong>{state.finalDecision.verdict}</strong>
-              <span>confidence {Math.round(state.finalDecision.confidence * 100)}%</span>
-              <p>{state.finalDecision.rationale}</p>
-            </div>
-          ) : (
-            <div className="decision-standby">
-              <span>{percent}% budget used</span>
-              <p>Decision unlocks after resume and final audit write.</p>
-            </div>
-          )}
-        </section>
+        </aside>
       </section>
     </main>
   );

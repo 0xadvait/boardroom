@@ -12,6 +12,7 @@ import type {
   VoiceEvent
 } from "./types";
 import { createAgentProfiles, TASK_PROMPT, VENDOR_SOURCES } from "./demo-data";
+import { fetchVendorSources, shortEvidence, sourceDocument } from "./live-sources";
 import { cosineSimilarity, pseudoEmbedding, scoreAgents } from "./scoring";
 
 function now(): string {
@@ -64,7 +65,7 @@ export function createInitialState(): DemoState {
     ],
     voiceEvents: [],
     mongoDocs: [],
-    sources: VENDOR_SOURCES,
+    sources: VENDOR_SOURCES.map((source) => ({ ...source, status: "pending" })),
     mongo: {
       mode: "unknown",
       dbName: process.env.BOARDROOM_DB ?? "boardroom"
@@ -426,6 +427,47 @@ function getSelected(state: DemoState, agentId: string): AgentProfile {
   return agent;
 }
 
+function source(state: DemoState, sourceId: string) {
+  return state.sources.find((item) => item.id === sourceId);
+}
+
+export async function ingestLiveSources(state: DemoState): Promise<{ state: DemoState; writes: MongoWrite[] }> {
+  const working = structuredClone(state) as DemoState;
+  const writes: MongoWrite[] = [];
+
+  const fetched = await fetchVendorSources(working.sources);
+  working.sources = fetched;
+  working.updatedAt = now();
+
+  writes.push({
+    collection: "source_documents",
+    operation: "insertMany",
+    documents: fetched.map((item) => sourceDocument(item, working.runId, working.taskId))
+  });
+
+  for (const item of fetched) {
+    pushMongoEvent(working, "source_documents", "insertOne", {
+      source_id: item.id,
+      status: item.status,
+      content_length: item.contentLength,
+      evidence_labels: item.evidence.map((evidence) => evidence.label),
+      text_hash: item.textHash
+    });
+  }
+
+  const fetchedCount = fetched.filter((item) => item.status === "fetched").length;
+  const evidenceCount = fetched.reduce((sum, item) => sum + item.evidence.length, 0);
+  timeline(
+    working,
+    "L3",
+    "Live source ingestion",
+    `Fetched ${fetchedCount}/${fetched.length} public vendor pages and extracted ${evidenceCount} evidence snippets into source_documents.`,
+    writes
+  );
+
+  return { state: working, writes };
+}
+
 export function spawnBoardRoom(state: DemoState): { state: DemoState; writes: MongoWrite[] } {
   const working = structuredClone(state) as DemoState;
   const writes: MongoWrite[] = [];
@@ -540,23 +582,25 @@ export function advanceDemo(state: DemoState): { state: DemoState; writes: Mongo
     working.selectedAgents.forEach((agent) =>
       setAgent(working, agent.agentId, {
         status: "running",
-        currentStep: "Reading public source set and checking blackboard relevance",
+        currentStep: "Reading live source_documents and checking blackboard relevance",
         tokensUsed: 1700
       })
     );
     updateBudget(working, 12_400, writes);
+    const pricingSource = source(working, "src-posthog-pricing");
+    const pricingSnippet = shortEvidence(pricingSource, "billing_limits");
     const entry = blackboard(
       working,
       pricing,
       "discovery",
       "team",
-      "PostHog uses usage-based pricing after generous free tiers; billing limits can cap each product, so procurement should require limits before rollout.",
+      `Live pricing page evidence: "${pricingSnippet}" PricingAnalyst recommends configuring billing limits before rollout.`,
       ["src-posthog-pricing"],
       writes
     );
     audit(working, pricing, "Usage-based pricing needs a spend cap before production rollout.", entry, 0.87, writes);
     checkpoint(working, pricing, 1, "checkpoint", "Pricing model extracted; modeling growth scenario.", writes, ["model_growth_events"]);
-    timeline(working, "L2", "Blackboard opens", "PricingAnalyst posted the first team-visible finding with source-backed evidence.", writes);
+    timeline(working, "L2", "Blackboard opens", "PricingAnalyst posted a team-visible finding derived from the fetched pricing page.", writes);
   }
 
   if (working.step === 2) {
@@ -572,12 +616,15 @@ export function advanceDemo(state: DemoState): { state: DemoState; writes: Mongo
       tokensUsed: 3400
     });
 
+    const trustSource = source(working, "src-posthog-trust");
+    const soc2Snippet = shortEvidence(trustSource, "soc2_type_ii");
+    const accessSnippet = shortEvidence(trustSource, "report_access", 170);
     const entry = blackboard(
       working,
       security,
       "discovery",
       "team",
-      "Trust portal indicates SOC 2 Type II coverage, but the report itself is gated. Contract approval should request the current report and confirm scope before signature.",
+      `Live Trust Center evidence: "${soc2Snippet}" Report access signal: "${accessSnippet}" SecurityReview asks procurement to verify current report scope.`,
       ["src-posthog-trust"],
       writes,
       2
@@ -613,12 +660,15 @@ export function advanceDemo(state: DemoState): { state: DemoState; writes: Mongo
       })
     );
 
+    const productSource = source(working, "src-posthog-product");
+    const integrationSnippet = shortEvidence(productSource, "integrations");
+    const apiSnippet = shortEvidence(productSource, "api_webhooks", 150);
     const entry = blackboard(
       working,
       integration,
       "progress",
       "team",
-      "Integration fit is strong for product engineering: public material describes APIs, webhooks, a data warehouse, and many sources or destinations in one product stack.",
+      `Live product page evidence: "${integrationSnippet}" API signal: "${apiSnippet}" IntegrationFit marks implementation risk as manageable.`,
       ["src-posthog-product"],
       writes
     );
@@ -664,7 +714,7 @@ export function advanceDemo(state: DemoState): { state: DemoState; writes: Mongo
     working.selectedAgents = [summaryAgent, ...working.selectedAgents];
 
     const content =
-      "Team summary: pricing needs billing limits; trust portal shows SOC 2 Type II coverage but current report and scope must be requested; integration fit is strong for product engineering.";
+      `Team summary from live sources: ${shortEvidence(source(working, "src-posthog-pricing"), "billing_limits", 120)} ${shortEvidence(source(working, "src-posthog-trust"), "soc2_type_ii", 120)} ${shortEvidence(source(working, "src-posthog-product"), "api_webhooks", 120)}`;
     const card = memory(working, "agent-summarizer", "team", content, 3, writes);
     const summaryEntry = blackboard(
       working,
@@ -705,7 +755,7 @@ export function advanceDemo(state: DemoState): { state: DemoState; writes: Mongo
       contracts,
       "decision",
       "team",
-      "Hold: proceed only after current SOC 2 Type II report scope is verified, billing limits are configured, and data-processing terms match internal policy.",
+      `Hold: live sources support the vendor's security and integration posture, but procurement must verify report scope and set spend guardrails. Evidence: "${shortEvidence(source(working, "src-posthog-trust"), "report_access", 140)}" and "${shortEvidence(source(working, "src-posthog-pricing"), "billing_limits", 140)}"`,
       ["src-posthog-trust", "src-posthog-pricing", "src-posthog-product"],
       writes,
       4

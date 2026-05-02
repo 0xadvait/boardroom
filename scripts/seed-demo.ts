@@ -1,9 +1,16 @@
 import { resetDemoState } from "../lib/demo-store";
-import { spawnBoardRoom, advanceDemo } from "../lib/demo-engine";
+import { advanceDemo, ingestLiveSources, spawnBoardRoom } from "../lib/demo-engine";
 import { applyMongoWrites, closeMongoClient, resetMongoDemo } from "../lib/mongo";
 
 async function applyStep(label: string, state: ReturnType<typeof resetDemoState>) {
-  const result = label === "spawn" ? spawnBoardRoom(state) : advanceDemo(state);
+  if (label === "spawn") {
+    const spawnResult = spawnBoardRoom(state);
+    const ingestResult = await ingestLiveSources(spawnResult.state);
+    await applyMongoWrites(ingestResult.state, [...spawnResult.writes, ...ingestResult.writes]);
+    return ingestResult.state;
+  }
+
+  const result = advanceDemo(state);
   await applyMongoWrites(result.state, result.writes);
   return result.state;
 }
