@@ -26,6 +26,16 @@ export async function getMongoDb(): Promise<Db | null> {
   return client.db(mongoDbName());
 }
 
+export async function closeMongoClient(): Promise<void> {
+  if (!globalThis.__boardroom_mongo_client) {
+    return;
+  }
+
+  const client = await globalThis.__boardroom_mongo_client;
+  await client.close();
+  globalThis.__boardroom_mongo_client = undefined;
+}
+
 async function collectionExists(db: Db, name: string): Promise<boolean> {
   const existing = await db.listCollections({ name }).toArray();
   return existing.length > 0;
@@ -151,7 +161,7 @@ export async function resetMongoDemo(state: DemoState): Promise<{ connected: boo
     }
 
     await ensureCoreCollectionsAndIndexes();
-    const collections = ["agent_profiles", "tasks", "blackboard_entries", "memory_cards", "groups", "audit", "agent_performance_records"];
+    const collections = ["agent_profiles", "tasks", "blackboard_entries", "memory_cards", "groups", "audit"];
     await Promise.all(collections.map((name) => db.collection(name).deleteMany({ demo_scope: DEMO_SCOPE })));
 
     state.mongo.mode = "atlas";

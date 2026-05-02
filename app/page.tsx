@@ -263,12 +263,10 @@ export default function Page() {
     <main className="dashboard-shell">
       <header className="topbar">
         <div className="brand-block">
-          <div className="brand-mark">
-            <img src="https://posthog.com/favicon.ico" alt="" />
-          </div>
+          <div className="brand-mark" aria-hidden="true">B</div>
           <div>
             <h1>BoardRoom</h1>
-            <p>Five agents. One budget. One blackboard. Kill any of them live and watch them resume.</p>
+            <p>MongoDB governance for live multi-agent vendor evaluation.</p>
           </div>
         </div>
         <div className="run-meta">
@@ -331,6 +329,21 @@ export default function Page() {
             <strong>{state.voiceEvents.length}</strong>
           </div>
         </div>
+      </section>
+
+      <section className="theme-strip" aria-label="Hackathon theme alignment">
+        <article>
+          <span>Prolonged Coordination</span>
+          <strong>MongoDB checkpoints survive kill and restart.</strong>
+        </article>
+        <article>
+          <span>Multi-Agent Collaboration</span>
+          <strong>Specialists share source-backed findings through a blackboard.</strong>
+        </article>
+        <article>
+          <span>Adaptive Retrieval</span>
+          <strong>Vector search plus visibility filters routes only relevant memory.</strong>
+        </article>
       </section>
 
       <section className="main-grid">

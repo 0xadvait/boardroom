@@ -1,6 +1,6 @@
 import { resetDemoState } from "../lib/demo-store";
 import { spawnBoardRoom, advanceDemo } from "../lib/demo-engine";
-import { applyMongoWrites, resetMongoDemo } from "../lib/mongo";
+import { applyMongoWrites, closeMongoClient, resetMongoDemo } from "../lib/mongo";
 
 async function applyStep(label: string, state: ReturnType<typeof resetDemoState>) {
   const result = label === "spawn" ? spawnBoardRoom(state) : advanceDemo(state);
@@ -25,7 +25,10 @@ async function main() {
   console.log(`Decision: ${state.finalDecision?.verdict ?? "pending"}`);
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+main()
+  .then(() => closeMongoClient())
+  .catch(async (error) => {
+    await closeMongoClient();
+    console.error(error);
+    process.exit(1);
+  });

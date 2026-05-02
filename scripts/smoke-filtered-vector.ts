@@ -1,4 +1,4 @@
-import { getMongoDb, mongoDbName } from "../lib/mongo";
+import { closeMongoClient, getMongoDb, mongoDbName } from "../lib/mongo";
 import { pseudoEmbedding } from "../lib/scoring";
 
 async function main() {
@@ -95,9 +95,28 @@ async function main() {
     }
   ];
 
-  const results = await collection.aggregate(pipeline).toArray();
+  type SmokeResult = {
+    content?: string;
+    visibility?: string;
+    owner_agent_id?: string;
+    team_id?: string;
+    score?: number;
+  };
+  let results: SmokeResult[] = [];
+  for (let attempt = 1; attempt <= 24; attempt += 1) {
+    results = await collection.aggregate(pipeline).toArray();
+    if (results.length > 0) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+
   console.log(`Filtered vector search results from ${mongoDbName()}:`);
   console.table(results);
+
+  if (results.length === 0) {
+    throw new Error("Filtered vector search returned no results. The Atlas index may still be building.");
+  }
 
   const leaked = results.some((result) => result.team_id === "other-team");
   if (leaked) {
@@ -107,7 +126,10 @@ async function main() {
   console.log("Smoke test passed: private/team/global visibility filter held.");
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+main()
+  .then(() => closeMongoClient())
+  .catch(async (error) => {
+    await closeMongoClient();
+    console.error(error);
+    process.exit(1);
+  });

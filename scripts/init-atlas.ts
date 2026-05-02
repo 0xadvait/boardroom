@@ -1,4 +1,4 @@
-import { createAtlasVectorSearchIndexes, ensureCoreCollectionsAndIndexes, getMongoDb, mongoDbName } from "../lib/mongo";
+import { closeMongoClient, createAtlasVectorSearchIndexes, ensureCoreCollectionsAndIndexes, getMongoDb, mongoDbName } from "../lib/mongo";
 
 async function main() {
   const db = await getMongoDb();
@@ -25,7 +25,10 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+main()
+  .then(() => closeMongoClient())
+  .catch(async (error) => {
+    await closeMongoClient();
+    console.error(error);
+    process.exit(1);
+  });

@@ -13,6 +13,16 @@ BoardRoom demonstrates four primitives for production multi-agent systems:
 
 The live workflow evaluates PostHog as an analytics vendor for a regulated B2B SaaS buyer. The app is a Next.js dashboard with MongoDB driver API routes. It runs in fallback replay mode without credentials and switches to Atlas mode when `MONGODB_URI` is available.
 
+## Hackathon Alignment
+
+BoardRoom is built for the MongoDB Agentic Evolution themes:
+
+- **Prolonged Coordination:** every agent step writes a checkpoint to MongoDB, and the demo kills and resumes `ContractRedFlags` mid-task from persisted state.
+- **Multi-Agent Collaboration:** 12 MongoDB-backed agent profiles are ranked into 5 specialists; agents publish findings to a shared blackboard and subscribe to relevant peer discoveries.
+- **Adaptive Retrieval:** blackboard and memory retrieval use vector similarity plus visibility filters so agents receive source-backed context that changes with the task and their authorization.
+
+What was built during the hackathon: the governance engine, MongoDB collections/index scripts, dashboard, demo state machine, token cascade, checkpoint/resume path, and ElevenLabs/browser narration path.
+
 ## Quick Start
 
 ```bash
@@ -60,6 +70,18 @@ Use the dashboard controls:
 3. `60s Run`: plays the whole judge-facing sequence.
 4. `Kill` and `Restart`: manually trigger the ContractRedFlags checkpoint-resume beat.
 
+## Submission Summary
+
+**Project:** BoardRoom
+
+**One-liner:** MongoDB governance for multi-agent workflows: capability dispatch, shared blackboard, layered memory, token budgets, and checkpoint recovery.
+
+**Live demo:** `npm run dev` then open `http://localhost:3000`.
+
+**MongoDB use:** Atlas stores the agent registry, active tasks, group budget, blackboard, layered memory cards, checkpoints, and audit log. Atlas Vector Search powers capability matching and filtered memory retrieval.
+
+**Why it matters:** teams are moving from single agents to fleets of agents, but most demos have no durable coordination, access-controlled shared memory, or budget enforcement. BoardRoom shows that governance layer working live.
+
 ## MongoDB Collections
 
 - `agent_profiles`
@@ -76,14 +98,13 @@ Atlas Vector Search indexes:
 - `blackboard_entries.blackboard_content_vector_index`
 - `memory_cards.memory_layered_vector_index`
 
-## Evidence Sources
+## Demo Evidence
 
 The demo uses public source URLs for the visible vendor-evaluation claims:
 
 - PostHog Trust Center: `https://trust.posthog.com/`
 - PostHog Pricing: `https://posthog.com/pricing`
 - PostHog Product OS: `https://posthog.com/`
-- PostHog open-source notes: `https://posthog.com/blog/the-hidden-benefits-of-being-an-open-source-startup`
 
 ## ElevenLabs
 

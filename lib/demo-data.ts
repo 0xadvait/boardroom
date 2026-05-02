@@ -59,12 +59,6 @@ export const VENDOR_SOURCES: SourceRef[] = [
     title: "PostHog Product OS",
     url: "https://posthog.com/",
     note: "Product page describes one stack with analytics, session replay, feature flags, data warehouse, API, webhooks, and many sources/destinations."
-  },
-  {
-    id: "src-posthog-open-source",
-    title: "PostHog Open Source Notes",
-    url: "https://posthog.com/blog/the-hidden-benefits-of-being-an-open-source-startup",
-    note: "Public company writing describes the open-source footprint and enterprise licensing boundary."
   }
 ];
 
