@@ -1,10 +1,10 @@
 # BoardRoom
 
-MongoDB-native governance for multi-agent vendor evaluation.
+MongoDB-native MCP control plane for governed multi-agent workflows.
 
 **Tagline:** Five agents. One budget. One blackboard. Kill any of them live and watch them resume.
 
-BoardRoom is packaged as an MCP control plane plus an observer UI. The MCP server exposes governance tools that any MCP-capable agent client can call; the dashboard is just a live judge-facing view of the same MongoDB-backed room.
+BoardRoom is an MCP control plane. It exposes governance tools that any MCP-capable agent client can call while MongoDB Atlas stores the room state, evidence, blackboard, memory, checkpoints, budget, and audit trail.
 
 BoardRoom demonstrates four primitives for production multi-agent systems:
 
@@ -13,7 +13,7 @@ BoardRoom demonstrates four primitives for production multi-agent systems:
 - Layered memory: private, team, and global memory cards with filtered Atlas Vector Search.
 - Token-budget governance: group-level budget warning at 70%, summarizer spawn at 90%, configured action at 100%.
 
-The live workflow evaluates PostHog as an analytics vendor for a regulated B2B SaaS buyer. The app is a Next.js dashboard with MongoDB driver API routes. It fetches public vendor pages during the demo, stores extracted evidence in MongoDB, and switches to Atlas mode when `MONGODB_URI` is available.
+The live workflow evaluates PostHog as an analytics vendor for a regulated B2B SaaS buyer. BoardRoom fetches public vendor pages during the run, stores extracted evidence in MongoDB, and governs a specialist agent room through MCP tools.
 
 ## Hackathon Alignment
 
@@ -23,20 +23,12 @@ BoardRoom is built for the MongoDB Agentic Evolution themes:
 - **Multi-Agent Collaboration:** 12 MongoDB-backed agent profiles are ranked into 5 specialists; agents publish findings to a shared blackboard and subscribe to relevant peer discoveries.
 - **Adaptive Retrieval:** blackboard and memory retrieval use vector similarity plus visibility filters so agents receive source-backed context that changes with the task and their authorization.
 
-What was built during the hackathon: the governance engine, MongoDB collections/index scripts, dashboard, demo state machine, token cascade, checkpoint/resume path, and ElevenLabs/browser narration path.
+What was built during the hackathon: the MCP governance server, MongoDB collections/index scripts, terminal harness, demo state machine, token cascade, layered memory, blackboard, and checkpoint/resume path.
 
 ## Quick Start
 
 ```bash
 npm install
-npm run dev
-```
-
-Open `http://localhost:3000`.
-
-Run the MCP server over stdio:
-
-```bash
 npm run mcp
 ```
 
@@ -92,12 +84,21 @@ npm run seed
 
 ## Demo Run
 
-Use the dashboard controls:
+Use an MCP client or the included terminal harness. The recommended live script:
 
-1. `Spawn`: ranks 12 agents, selects the top 5 by the weighted dispatch formula, fetches public vendor pages, and writes `source_documents` to MongoDB.
-2. `Advance`: turns the fetched source evidence into blackboard posts, vector subscription, 70% warning, 90% summarizer, kill, resume, and decision.
-3. `60s Run`: plays the whole judge-facing sequence.
-4. `Kill` and `Restart`: manually trigger the ContractRedFlags checkpoint-resume beat.
+```bash
+npm run harness -- "I want to due diligence PostHog as a vendor for my B2B SaaS business in the most efficient way."
+```
+
+The harness prints the governance events that an MCP client would trigger:
+
+1. Configure the room: group token budget, memory visibility, threshold actions.
+2. Dispatch the specialist board using capability profile scoring.
+3. Fetch live public vendor sources into MongoDB `source_documents`.
+4. Advance blackboard findings and vector subscriptions.
+5. Trigger 70% warning and 90% summarizer.
+6. Kill and resume `ContractRedFlags` from MongoDB checkpoint.
+7. Emit a source-linked governed output.
 
 ## Submission Summary
 
@@ -105,7 +106,7 @@ Use the dashboard controls:
 
 **One-liner:** MongoDB governance for multi-agent workflows: capability dispatch, shared blackboard, layered memory, token budgets, and checkpoint recovery.
 
-**Live demo:** `npm run dev` then open `http://localhost:3000`. For the infrastructure framing, run `npm run mcp` and call BoardRoom from an MCP client while the dashboard observes the same MongoDB-backed state.
+**Live demo:** run `npm run mcp` from an MCP client, or use `npm run harness -- "<request>"` for the terminal walkthrough.
 
 **MongoDB use:** Atlas stores the agent registry, active tasks, group budget, blackboard, layered memory cards, checkpoints, and audit log. Atlas Vector Search powers capability matching and filtered memory retrieval.
 
@@ -136,10 +137,6 @@ The demo fetches these public source URLs live and stores extracted snippets in 
 - PostHog Pricing: `https://posthog.com/pricing`
 - PostHog Product OS: `https://posthog.com/`
 
-## ElevenLabs
-
-Set `ELEVENLABS_API_KEY` and optionally `ELEVENLABS_VOICE_ID` in `.env.local`. Without it, the browser speech API narrates the same budget-cascade events.
-
 ## Pitch Line
 
-BoardRoom is not a vendor-selection chatbot. It is the governance plane underneath real multi-agent work: capability dispatch, shared MongoDB blackboard, access-controlled memory retrieval, budget enforcement, checkpointed recovery, and source-linked auditability.
+BoardRoom is not a vendor-selection chatbot or a dashboard. It is the MCP governance plane underneath real multi-agent work: capability dispatch, shared MongoDB blackboard, access-controlled memory retrieval, budget enforcement, checkpointed recovery, and source-linked auditability.
