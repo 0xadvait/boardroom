@@ -68,19 +68,47 @@ export function normalizeInverseDuration(avgDurationMs: number): number {
   return Math.min(1, expectedFast / bounded);
 }
 
+export function classifyTaskType(taskPrompt: string): string {
+  const text = taskPrompt.toLowerCase();
+  if (/\b(coinbase|exchange|token|crypto|listing|market maker|custody|wallet|blockchain)\b/.test(text)) {
+    return "crypto_market_decision";
+  }
+  if (/\b(api|architecture|technical|integration|database|system|build|migrate|code|infra)\b/.test(text)) {
+    return "technical_decision";
+  }
+  if (/\b(vendor|procurement|buy|renew|supplier|trust center|soc 2|contract)\b/.test(text)) {
+    return "procurement_decision";
+  }
+  if (/\b(market|competitor|pricing|gtm|sales|customer|segment|positioning)\b/.test(text)) {
+    return "market_strategy";
+  }
+  if (/\b(legal|risk|compliance|policy|regulation|privacy|terms|liability)\b/.test(text)) {
+    return "legal_risk";
+  }
+  if (/\b(finance|revenue|cost|roi|budget|funding|runway|unit economics)\b/.test(text)) {
+    return "financial_analysis";
+  }
+  return "general_decision";
+}
+
 export function scoreAgents(taskPrompt: string, taskType: string, agents: AgentProfile[]): AgentProfile[] {
   const taskEmbedding = pseudoEmbedding(taskPrompt);
   const withPromptScore = agents
-    .map((agent) => ({
-      agent,
-      promptRelevance: cosineSimilarity(taskEmbedding, agent.descriptionEmbedding)
-    }))
+    .map((agent) => {
+      const semanticScore = cosineSimilarity(taskEmbedding, agent.descriptionEmbedding);
+      const taskTypeBoost = agent.skills.includes(taskType) ? 0.25 : 0;
+      const tokenBoost = agent.skills.some((skill) => taskPrompt.toLowerCase().includes(skill.replace(/_/g, " "))) ? 0.1 : 0;
+      return {
+        agent,
+        promptRelevance: Math.min(1, semanticScore + taskTypeBoost + tokenBoost)
+      };
+    })
     .sort((left, right) => right.promptRelevance - left.promptRelevance)
     .slice(0, 12);
 
   const scored = withPromptScore
     .map(({ agent, promptRelevance }) => {
-      const skill = agent.provenSkills[taskType] ?? {
+      const skill = agent.provenSkills[taskType] ?? agent.provenSkills.general_decision ?? {
         successRate: 0.5,
         avgDurationMs: agent.avgDurationMs,
         avgTokens: 7000,
@@ -123,7 +151,7 @@ export function scoreAgents(taskPrompt: string, taskType: string, agents: AgentP
   }));
 }
 
-export function buildDispatchAggregation(taskEmbedding: number[]) {
+export function buildDispatchAggregation(taskEmbedding: number[], taskType = "general_decision") {
   return [
     {
       $vectorSearch: {
@@ -147,7 +175,7 @@ export function buildDispatchAggregation(taskEmbedding: number[]) {
           {
             $match: {
               $expr: { $eq: ["$agent_id", "$$agent_id"] },
-              task_type: "vendor_evaluation"
+              task_type: taskType
             }
           },
           {

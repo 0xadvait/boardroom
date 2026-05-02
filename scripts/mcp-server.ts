@@ -1,18 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import {
-  advanceDemo,
-  ingestLiveSources,
-  killContractAgent,
-  restartContractAgent,
-  spawnTeamRoom
-} from "../lib/demo-engine";
+import { spawnTeamRoom } from "../lib/demo-engine";
 import { getDemoState, resetDemoState, setDemoState } from "../lib/demo-store";
 import { approveGovernancePlan, buildGovernancePlan, governancePlanWrites } from "../lib/governance-plan";
 import { applyMongoWrites, closeMongoClient, resetMongoDemo } from "../lib/mongo";
-import { fetchVendorSources, sourceDocument } from "../lib/live-sources";
-import { cosineSimilarity, pseudoEmbedding } from "../lib/scoring";
+import { fetchSources, sourceDocument } from "../lib/live-sources";
+import { classifyTaskType, cosineSimilarity, pseudoEmbedding } from "../lib/scoring";
 import type {
   AuditEvent,
   BlackboardEntry,
@@ -37,7 +31,7 @@ function compactState(state: DemoState) {
     taskId: state.taskId,
     status: state.status,
     mongo: state.mongo,
-    vendor: state.vendor,
+    target: state.target,
     selectedAgents: state.selectedAgents
       .filter((agent) => agent.agentId !== "agent-summarizer")
       .map((agent) => ({
@@ -121,6 +115,11 @@ function agentName(state: DemoState, agentId: string): string {
   );
 }
 
+function updateAgentStatus(state: DemoState, agentId: string, patch: { status?: DemoState["selectedAgents"][number]["status"]; currentStep?: string }) {
+  state.selectedAgents = state.selectedAgents.map((agent) => (agent.agentId === agentId ? { ...agent, ...patch } : agent));
+  state.candidates = state.candidates.map((agent) => (agent.agentId === agentId ? { ...agent, ...patch } : agent));
+}
+
 function sourceRefsFromInput(sources: Array<{ url: string; title?: string; note?: string }>): SourceRef[] {
   return sources.map((source, index) => ({
     id: `src-user-${index + 1}-${stableId(source.url).slice(0, 8)}`,
@@ -190,26 +189,27 @@ server.registerTool(
     inputSchema: {
       request: z
         .string()
-        .default("I want to due diligence PostHog as a vendor for my B2B SaaS business in the most efficient way.")
+        .default("I want to evaluate an important decision in the most efficient way.")
         .describe("The user's high-level work request."),
-      vendor: z.string().default("PostHog").describe("Vendor or target entity for the live workload."),
+      target: z.string().default("custom").describe("Target entity, topic, decision, or workstream."),
       tokenBudget: z.number().int().positive().default(50_000).describe("Proposed group token budget."),
       reset: z.boolean().default(true).describe("Reset the current room before proposing a new plan.")
     }
   },
-  async ({ request, vendor, tokenBudget, reset }) => {
+  async ({ request, target, tokenBudget, reset }) => {
     let state = reset ? resetDemoState() : getDemoState();
     if (reset) {
       await resetMongoDemo(state);
     }
 
-    state.vendor = vendor;
+    state.target = target;
     state.taskPrompt = request;
+    state.taskType = classifyTaskType(request);
     state.budget.total = tokenBudget;
     const plan = buildGovernancePlan({
       runId: state.runId,
       request,
-      vendor,
+      target,
       taskType: state.taskType,
       candidates: state.candidates,
       totalTokenBudget: tokenBudget
@@ -233,6 +233,206 @@ server.registerTool(
       requiresUserApproval: true,
       nextTool: "team_manager_approve_plan",
       proposedPlan: plan
+    });
+  }
+);
+
+server.registerTool(
+  "team_manager_kill_agent",
+  {
+    title: "Record Agent Failure",
+    description:
+      "Record that the MCP host killed or lost an agent after checkpoint persistence. This updates MongoDB state; it does not kill an OS process.",
+    inputSchema: {
+      agentId: z.string().describe("Agent id to mark failed or killed."),
+      reason: z.string().default("Host reported agent interruption."),
+      stepIndex: z.number().int().nonnegative().optional(),
+      partialOutput: z.string().default(""),
+      pendingToolCalls: z.array(z.string()).default([])
+    }
+  },
+  async ({ agentId, reason, stepIndex, partialOutput, pendingToolCalls }) => {
+    const state = getDemoState();
+    const latest = state.checkpoints.find((checkpoint) => checkpoint.agentId === agentId);
+    const checkpoint: CheckpointRecord = {
+      id: scopedId(state, "checkpoint-killed", `${agentId}-${reason}`),
+      taskId: state.taskId,
+      agentId,
+      agentName: agentName(state, agentId),
+      stepIndex: stepIndex ?? latest?.stepIndex ?? 0,
+      pendingToolCalls: pendingToolCalls.length > 0 ? pendingToolCalls : latest?.pendingToolCalls ?? [],
+      partialOutput: partialOutput || latest?.partialOutput || reason,
+      mongoChangeStreamResumeToken: latest?.mongoChangeStreamResumeToken ?? `resume-token-${state.runId}-${agentId}-killed`,
+      startedAt: now(),
+      tokensInput: 0,
+      tokensOutput: 0,
+      outcome: "killed"
+    };
+    state.status = "agent_killed";
+    state.checkpoints = [checkpoint, ...state.checkpoints].slice(0, 50);
+    updateAgentStatus(state, agentId, {
+      status: "killed",
+      currentStep: `Interrupted by host: ${reason}`
+    });
+    await applyAndStore(state, [
+      {
+        collection: "agent_performance_records",
+        operation: "insertOne",
+        document: {
+          _id: checkpoint.id,
+          task_id: checkpoint.taskId,
+          agent_id: checkpoint.agentId,
+          agent_name: checkpoint.agentName,
+          task_type: state.taskType,
+          step_index: checkpoint.stepIndex,
+          pending_tool_calls: checkpoint.pendingToolCalls,
+          partial_output: checkpoint.partialOutput,
+          mongo_change_stream_resume_token: checkpoint.mongoChangeStreamResumeToken,
+          started_at: new Date(checkpoint.startedAt),
+          tokens_input: checkpoint.tokensInput,
+          tokens_output: checkpoint.tokensOutput,
+          tokens_total: 0,
+          outcome: checkpoint.outcome,
+          failure_reason: reason
+        }
+      },
+      {
+        collection: "tasks",
+        operation: "updateOne",
+        filter: { _id: state.taskId },
+        update: {
+          $set: {
+            status: state.status,
+            checkpoint,
+            updated_at: new Date()
+          }
+        }
+      },
+      {
+        collection: "audit",
+        operation: "insertOne",
+        document: {
+          _id: scopedId(state, "audit-agent-killed", agentId),
+          task_id: state.taskId,
+          event_type: "agent_interrupted",
+          agent_id: agentId,
+          reason,
+          checkpoint_id: checkpoint.id,
+          created_at: new Date()
+        }
+      }
+    ]);
+    logEvent("agent.interrupted", {
+      agent: checkpoint.agentName,
+      checkpoint: checkpoint.mongoChangeStreamResumeToken,
+      reason
+    });
+
+    return toolJson({
+      message: "Agent interruption recorded. The host can resume from the returned checkpoint.",
+      state: compactState(state),
+      checkpoint
+    });
+  }
+);
+
+server.registerTool(
+  "team_manager_resume_agent",
+  {
+    title: "Resume Agent From Checkpoint",
+    description:
+      "Return the latest checkpoint context for an agent and mark it resumed in MongoDB. The MCP host is responsible for restarting the actual worker.",
+    inputSchema: {
+      agentId: z.string().describe("Agent id to resume.")
+    }
+  },
+  async ({ agentId }) => {
+    const state = getDemoState();
+    const latest = state.checkpoints.find((checkpoint) => checkpoint.agentId === agentId);
+    if (!latest) {
+      return toolJson({
+        message: "No checkpoint exists for this agent. Call team_manager_record_checkpoint before resuming.",
+        nextTool: "team_manager_record_checkpoint",
+        agentId
+      });
+    }
+
+    const resumed: CheckpointRecord = {
+      ...latest,
+      id: scopedId(state, "checkpoint-resumed", agentId),
+      startedAt: now(),
+      outcome: "resumed"
+    };
+    state.status = "resumed";
+    state.checkpoints = [resumed, ...state.checkpoints].slice(0, 50);
+    updateAgentStatus(state, agentId, {
+      status: "resumed",
+      currentStep: `Resumed from checkpoint step ${latest.stepIndex}`
+    });
+    await applyAndStore(state, [
+      {
+        collection: "agent_performance_records",
+        operation: "insertOne",
+        document: {
+          _id: resumed.id,
+          task_id: resumed.taskId,
+          agent_id: resumed.agentId,
+          agent_name: resumed.agentName,
+          task_type: state.taskType,
+          step_index: resumed.stepIndex,
+          pending_tool_calls: resumed.pendingToolCalls,
+          partial_output: resumed.partialOutput,
+          mongo_change_stream_resume_token: resumed.mongoChangeStreamResumeToken,
+          started_at: new Date(resumed.startedAt),
+          tokens_input: resumed.tokensInput,
+          tokens_output: resumed.tokensOutput,
+          tokens_total: resumed.tokensInput + resumed.tokensOutput,
+          outcome: resumed.outcome
+        }
+      },
+      {
+        collection: "tasks",
+        operation: "updateOne",
+        filter: { _id: state.taskId },
+        update: {
+          $set: {
+            status: state.status,
+            checkpoint: resumed,
+            updated_at: new Date()
+          }
+        }
+      },
+      {
+        collection: "audit",
+        operation: "insertOne",
+        document: {
+          _id: scopedId(state, "audit-agent-resumed", agentId),
+          task_id: state.taskId,
+          event_type: "agent_resumed",
+          agent_id: agentId,
+          checkpoint_id: resumed.id,
+          created_at: new Date()
+        }
+      }
+    ]);
+    logEvent("agent.resume", {
+      agent: resumed.agentName,
+      checkpoint: resumed.mongoChangeStreamResumeToken,
+      status: state.status
+    });
+
+    return toolJson({
+      message: "Agent marked resumed. Hand this checkpoint context to the restarted worker.",
+      state: compactState(state),
+      checkpoint: resumed,
+      resumeContext: {
+        taskId: resumed.taskId,
+        agentId: resumed.agentId,
+        stepIndex: resumed.stepIndex,
+        pendingToolCalls: resumed.pendingToolCalls,
+        partialOutput: resumed.partialOutput,
+        mongoChangeStreamResumeToken: resumed.mongoChangeStreamResumeToken
+      }
     });
   }
 );
@@ -341,7 +541,7 @@ server.registerTool(
       });
     }
 
-    const fetched = await fetchVendorSources(state.sources, state.taskPrompt);
+    const fetched = await fetchSources(state.sources, state.taskPrompt);
     state.sources = fetched;
     await applyAndStore(state, [
       {
@@ -388,7 +588,7 @@ server.registerTool(
     description:
       "Append a source-linked finding, decision, request, progress update, or warning to the shared MongoDB blackboard.",
     inputSchema: {
-      agentId: z.string().describe("Authoring agent id, for example agent-security."),
+      agentId: z.string().describe("Authoring agent id, for example agent-legal or agent-evidence."),
       entryType: z.enum(["discovery", "decision", "request", "progress", "warning"]),
       visibility: z.enum(["private", "team", "global"]).default("team"),
       content: z.string().min(1),
@@ -807,28 +1007,29 @@ server.registerTool(
     inputSchema: {
       request: z
         .string()
-        .default("I want to due diligence PostHog as a vendor for my B2B SaaS business in the most efficient way.")
+        .default("I want to evaluate an important decision in the most efficient way.")
         .describe("The user's high-level work request."),
-      vendor: z.string().default("PostHog").describe("Vendor or target entity for the live workload."),
+      target: z.string().default("custom").describe("Target entity, topic, decision, or workstream."),
       tokenBudget: z.number().int().positive().default(50_000).describe("Group token budget for the governed run."),
       reset: z.boolean().default(false).describe("Reset the current room before starting."),
-      autoApprovePlan: z.boolean().default(false).describe("For rehearsals only: auto-approve a proposed plan if none exists.")
+      autoApprovePlan: z.boolean().default(false).describe("Auto-approve a proposed plan if none exists.")
     }
   },
-  async ({ request, vendor, tokenBudget, reset, autoApprovePlan }) => {
+  async ({ request, target, tokenBudget, reset, autoApprovePlan }) => {
     let state = reset ? resetDemoState() : getDemoState();
     if (reset) {
       await resetMongoDemo(state);
     }
 
-    state.vendor = vendor;
+    state.target = target;
     state.taskPrompt = request;
+    state.taskType = classifyTaskType(request);
     state.budget.total = tokenBudget;
     if (!state.governancePlan || state.governancePlan.status !== "approved") {
       const plan = buildGovernancePlan({
         runId: state.runId,
         request,
-        vendor,
+        target,
         taskType: state.taskType,
         candidates: state.candidates,
         totalTokenBudget: tokenBudget
@@ -851,7 +1052,7 @@ server.registerTool(
 
       const approval = approveGovernancePlan(plan, {
         approved: true,
-        userNotes: "Auto-approved for rehearsal."
+        userNotes: "Auto-approved by MCP host."
       });
       state.governancePlan = approval.plan;
       await applyAndStore(state, approval.writes);
@@ -859,7 +1060,8 @@ server.registerTool(
 
     state.budget.total = state.governancePlan.totalTokenBudget;
     logEvent("room.configure", {
-      vendor,
+      target,
+      taskType: state.taskType,
       tokenBudget: state.budget.total,
       governancePlanId: state.governancePlan.id,
       memoryVisibility: state.governancePlan.memoryPolicy.visibility,
@@ -874,41 +1076,24 @@ server.registerTool(
     });
 
     const spawnResult = spawnTeamRoom(state);
-    const usesDemoPostHogSources =
-      spawnResult.state.sources.some((source) => source.id.startsWith("src-posthog")) &&
-      spawnResult.state.taskPrompt.toLowerCase().includes("posthog");
     const hasUserSources = spawnResult.state.sources.some((source) => source.id.startsWith("src-user"));
 
-    if (!usesDemoPostHogSources && !hasUserSources) {
+    if (!hasUserSources) {
       spawnResult.state.sources = [];
       state = await applyAndStore(spawnResult.state, spawnResult.writes);
       logEvent("room.started.awaiting_sources", {
         taskId: state.taskId,
-        reason: "custom task has no user-provided sources"
+        reason: "no user-provided sources"
       });
       return toolJson({
         message:
-          "Team Manager started the approved room and dispatched agents, but did not ingest demo sources for this custom task. Call team_manager_set_sources, then team_manager_ingest_sources.",
+          "Team Manager started the approved room and dispatched agents, but no sources are registered. Call team_manager_set_sources, then team_manager_ingest_sources.",
         nextTools: ["team_manager_set_sources", "team_manager_ingest_sources"],
         state: compactState(state)
       });
     }
 
-    if (hasUserSources) {
-      state = await applyAndStore(spawnResult.state, spawnResult.writes);
-      logEvent("room.started.ready_for_user_source_ingestion", {
-        taskId: state.taskId,
-        sources: state.sources.length
-      });
-      return toolJson({
-        message: "Team Manager started the approved room and dispatched agents. Call team_manager_ingest_sources to fetch the registered sources.",
-        nextTool: "team_manager_ingest_sources",
-        state: compactState(state)
-      });
-    }
-
-    const ingestResult = await ingestLiveSources(spawnResult.state);
-    state = await applyAndStore(ingestResult.state, [...spawnResult.writes, ...ingestResult.writes]);
+    state = await applyAndStore(spawnResult.state, spawnResult.writes);
     logEvent("dispatch.selected", {
       agents: state.selectedAgents
         .filter((agent) => agent.agentId !== "agent-summarizer")
@@ -916,13 +1101,8 @@ server.registerTool(
           name: agent.name,
           rank: agent.score?.rank,
           score: agent.score?.matchScore,
-          tokenEfficiency: agent.score?.tokenEfficiency
-        }))
-    });
-    logEvent("sources.ingested", {
-      collection: "source_documents",
-      fetched: state.sources.filter((source) => source.status === "fetched").length,
-      evidenceSnippets: state.sources.reduce((sum, source) => sum + (source.evidence?.length ?? 0), 0)
+            tokenEfficiency: agent.score?.tokenEfficiency
+          }))
     });
 
     const approvedPlan = state.governancePlan;
@@ -931,7 +1111,8 @@ server.registerTool(
     }
 
     return toolJson({
-      message: "Team Manager started the approved room. Agents dispatched and live evidence fetched.",
+      message: "Team Manager started the approved room and dispatched agents. Call team_manager_ingest_sources to fetch the registered sources.",
+      nextTool: "team_manager_ingest_sources",
       governance: {
         plan: approvedPlan,
         tokenBudget: state.budget.total,
@@ -939,93 +1120,6 @@ server.registerTool(
         dispatchWeights: approvedPlan.dispatchWeights
       },
       state: compactState(state)
-    });
-  }
-);
-
-server.registerTool(
-  "team_manager_advance",
-  {
-    title: "Advance Governance Step",
-    description:
-      "Advance the governed workflow by one step: blackboard findings, subscriptions, budget cascade, checkpoint recovery, and final decision.",
-    inputSchema: {}
-  },
-  async () => {
-    const current = getDemoState();
-    if (current.selectedAgents.length === 0) {
-      const spawnResult = spawnTeamRoom(current);
-      const ingestResult = await ingestLiveSources(spawnResult.state);
-      const state = await applyAndStore(ingestResult.state, [...spawnResult.writes, ...ingestResult.writes]);
-      return toolJson({
-        message: "Room was empty, so Team Manager started the room instead.",
-        state: compactState(state)
-      });
-    }
-
-    const result = advanceDemo(current);
-    const state = await applyAndStore(result.state, result.writes);
-    logEvent("room.advance", {
-      status: state.status,
-      budget: `${state.budget.consumed}/${state.budget.total}`,
-      warnedAt70: state.budget.warnedAt70,
-      summarizedAt90: state.budget.summarizedAt90,
-      blackboardEntries: state.blackboard.length,
-      checkpoints: state.checkpoints.length,
-      latestAgent: state.checkpoints[0]?.agentName
-    });
-
-    return toolJson({
-      message: "Advanced one governance step.",
-      state: compactState(state),
-      latestBlackboardEntry: state.blackboard[0] ?? null,
-      latestCheckpoint: state.checkpoints[0] ?? null
-    });
-  }
-);
-
-server.registerTool(
-  "team_manager_kill_agent",
-  {
-    title: "Kill Contract Agent",
-    description: "Simulate killing the ContractRedFlags agent after its latest checkpoint has been persisted.",
-    inputSchema: {}
-  },
-  async () => {
-    const result = killContractAgent(getDemoState());
-    const state = await applyAndStore(result.state, result.writes);
-    logEvent("agent.kill", {
-      agent: "ContractRedFlags",
-      checkpoint: state.checkpoints[0]?.mongoChangeStreamResumeToken,
-      partialOutput: state.checkpoints[0]?.partialOutput
-    });
-    return toolJson({
-      message: "ContractRedFlags killed after checkpoint write.",
-      state: compactState(state),
-      latestCheckpoint: state.checkpoints[0] ?? null
-    });
-  }
-);
-
-server.registerTool(
-  "team_manager_resume_agent",
-  {
-    title: "Resume Contract Agent",
-    description: "Resume ContractRedFlags from the latest MongoDB checkpoint.",
-    inputSchema: {}
-  },
-  async () => {
-    const result = restartContractAgent(getDemoState());
-    const state = await applyAndStore(result.state, result.writes);
-    logEvent("agent.resume", {
-      agent: "ContractRedFlags",
-      checkpoint: state.checkpoints[0]?.mongoChangeStreamResumeToken,
-      status: state.status
-    });
-    return toolJson({
-      message: "ContractRedFlags resumed from MongoDB checkpoint.",
-      state: compactState(state),
-      latestCheckpoint: state.checkpoints[0] ?? null
     });
   }
 );

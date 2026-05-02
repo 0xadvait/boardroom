@@ -192,7 +192,7 @@ export async function resetMongoDemo(state: DemoState): Promise<{ connected: boo
 
     return { connected: true };
   } catch (error) {
-    state.mongo.mode = "replay";
+    state.mongo.mode = "local";
     state.mongo.lastError = error instanceof Error ? error.message : String(error);
     return { connected: false, error: state.mongo.lastError };
   }
@@ -213,7 +213,7 @@ export async function applyMongoWrites(
   try {
     const db = await getMongoDb();
     if (!db) {
-      state.mongo.mode = "replay";
+      state.mongo.mode = "local";
       state.mongo.dbName = mongoDbName();
       return { connected: false };
     }
@@ -242,7 +242,7 @@ export async function applyMongoWrites(
     state.mongo.lastError = undefined;
     return { connected: true };
   } catch (error) {
-    state.mongo.mode = "replay";
+    state.mongo.mode = "local";
     state.mongo.dbName = mongoDbName();
     state.mongo.lastError = error instanceof Error ? error.message : String(error);
     return { connected: false, error: state.mongo.lastError };

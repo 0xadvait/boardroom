@@ -10,28 +10,6 @@ export interface FetchedSource extends SourceRef {
   textHash: string;
 }
 
-const EXTRACTORS: Record<string, Array<{ label: string; patterns: string[]; confidence: number }>> = {
-  "src-posthog-trust": [
-    { label: "soc2_type_ii", patterns: ["SOC 2 Type II", "independently audited"], confidence: 0.93 },
-    { label: "report_access", patterns: ["Get access", "SOC 2 Report"], confidence: 0.82 },
-    { label: "compliance_scope", patterns: ["SOC 2", "GDPR", "CCPA", "HIPAA"], confidence: 0.8 },
-    { label: "security_controls", patterns: ["Encryption-at-rest", "Encryption-in-transit", "Audit Logging"], confidence: 0.78 }
-  ],
-  "src-posthog-pricing": [
-    { label: "usage_based_pricing", patterns: ["Usage-based pricing", "Rates (after the monthly free tier)"], confidence: 0.9 },
-    { label: "billing_limits", patterns: ["billing limit", "unexpected bill"], confidence: 0.88 },
-    { label: "free_tier", patterns: ["1M events", "5K recordings", "1M requests"], confidence: 0.86 },
-    { label: "paid_retention", patterns: ["7-year data retention", "Email support"], confidence: 0.82 },
-    { label: "platform_includes", patterns: ["API access", "Unlimited team members"], confidence: 0.78 }
-  ],
-  "src-posthog-product": [
-    { label: "data_stack", patterns: ["A data warehouse", "SQL editor", "BI", "data viz"], confidence: 0.86 },
-    { label: "integrations", patterns: ["120+ sources", "destinations"], confidence: 0.84 },
-    { label: "api_webhooks", patterns: ["API, webhooks"], confidence: 0.83 },
-    { label: "product_surface", patterns: ["Product Analytics", "Session Replay", "Feature flags"], confidence: 0.8 }
-  ]
-};
-
 function normalizeHtml(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -53,22 +31,6 @@ function stableHash(input: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
-}
-
-function findSnippet(text: string, patterns: string[]): string | null {
-  const lower = text.toLowerCase();
-  const indexes = patterns
-    .map((pattern) => lower.indexOf(pattern.toLowerCase()))
-    .filter((index) => index >= 0);
-
-  if (indexes.length === 0) {
-    return null;
-  }
-
-  const first = Math.min(...indexes);
-  const start = first;
-  const end = Math.min(text.length, first + 320);
-  return text.slice(start, end).trim();
 }
 
 const STOPWORDS = new Set([
@@ -135,25 +97,10 @@ function genericEvidence(source: SourceRef, text: string, query: string): Source
 }
 
 function extractEvidence(source: SourceRef, text: string, query = ""): SourceEvidence[] {
-  const extractors = EXTRACTORS[source.id] ?? [];
-  const evidence = extractors
-    .map((extractor) => {
-      const snippet = findSnippet(text, extractor.patterns);
-      if (!snippet) {
-        return null;
-      }
-      return {
-        label: extractor.label,
-        snippet,
-        confidence: extractor.confidence
-      };
-    })
-    .filter((item): item is SourceEvidence => item !== null);
-
-  return evidence.length > 0 ? evidence : genericEvidence(source, text, query);
+  return genericEvidence(source, text, query);
 }
 
-export async function fetchVendorSources(sources: SourceRef[], query = ""): Promise<FetchedSource[]> {
+export async function fetchSources(sources: SourceRef[], query = ""): Promise<FetchedSource[]> {
   return Promise.all(
     sources.map(async (source) => {
       const fetchedAt = new Date().toISOString();

@@ -4,9 +4,7 @@ MongoDB-native team manager for multi-agent collaboration.
 
 **Tagline:** Tell it the job. It proposes the team, budgets, memory rules, and models. Approve the plan, then kill any agent and watch it resume from MongoDB.
 
-Team Manager is an MCP server for governing multi-agent work. An MCP-capable host asks it to plan a specialist room, the manager asks the human for approval or edits, and MongoDB Atlas stores the skills, assignments, shared context, memory boundaries, token budget, checkpoints, source evidence, and audit trail.
-
-The live workflow evaluates PostHog as an analytics vendor for a B2B SaaS buyer. The vendor evaluation is just the workload; the product is the MongoDB-backed team manager underneath it.
+Team Manager is an MCP server for governing arbitrary multi-agent work. An MCP-capable host gives it any complex request, the manager classifies the task, proposes a specialist room, asks the human for approval or edits, and MongoDB Atlas stores the skills, assignments, shared context, memory boundaries, token budget, checkpoints, source evidence, and audit trail.
 
 ## Primary Theme
 
@@ -28,16 +26,16 @@ The intended MCP sequence is collaborative:
 1. `team_manager_plan_room`: proposes the measurement formula, routing cascade, specialist roster, versioned capability vectors, token allocation, model profiles, memory visibility, priorities, and user questions.
 2. `team_manager_approve_plan`: records the human's approval or revision request in MongoDB.
 3. `team_manager_set_sources`: registers the URLs the host agent or user wants the room to use.
-4. `team_manager_start_room`: dispatches the approved room. For custom tasks it refuses to ingest the PostHog demo source pack unless user sources are provided.
+4. `team_manager_start_room`: dispatches the approved room and asks for sources if none have been registered.
 5. `team_manager_ingest_sources`: fetches registered URLs, extracts generic evidence snippets from the task query, and writes `source_documents`.
 6. `team_manager_post_blackboard`: lets host-run specialist agents publish source-linked findings to shared context.
 7. `team_manager_query_context`: retrieves relevant blackboard, memory, and source evidence with visibility filtering.
 8. `team_manager_write_memory`: stores private, team, or global memory cards.
 9. `team_manager_record_checkpoint`: persists agent checkpoints.
-10. `team_manager_update_budget`: updates group token usage and returns threshold actions.
-11. `team_manager_emit_decision`: stores the final decision and claim-to-evidence audit trail.
-
-The `team_manager_advance`, `team_manager_kill_agent`, and `team_manager_resume_agent` tools are retained for the rehearsed PostHog demo replay. They are intentionally separate from the generic MCP primitives above.
+10. `team_manager_kill_agent`: records that the MCP host killed or lost a worker and stores the checkpoint state.
+11. `team_manager_resume_agent`: returns checkpoint context for the host to restart that worker.
+12. `team_manager_update_budget`: updates group token usage and returns threshold actions.
+13. `team_manager_emit_decision`: stores the final decision and claim-to-evidence audit trail.
 
 ## Design Anchors
 
@@ -79,12 +77,6 @@ Example MCP server entry:
 }
 ```
 
-Terminal demo harness:
-
-```bash
-npm run harness -- "I want to due diligence PostHog as a vendor for my B2B SaaS business in the most efficient way."
-```
-
 Full demo operator notes are in [docs/mcp-demo.md](docs/mcp-demo.md).
 
 ## Atlas Sandbox
@@ -108,12 +100,6 @@ Validate the filtered vector index on `memory_cards`:
 npm run atlas:smoke
 ```
 
-Seed a full replay into Atlas:
-
-```bash
-npm run seed
-```
-
 ## MongoDB Collections
 
 - `governance_plans`: proposed and approved room plans, questions, model profiles, token allocations, and memory policy.
@@ -132,22 +118,14 @@ Atlas Vector Search indexes:
 - `blackboard_entries.blackboard_content_vector_index`
 - `memory_cards.memory_layered_vector_index`
 
-## Demo Evidence
-
-The demo fetches these public source URLs live and stores extracted snippets in MongoDB before agents write findings:
-
-- PostHog Trust Center: `https://trust.posthog.com/`
-- PostHog Pricing: `https://posthog.com/pricing`
-- PostHog Product OS: `https://posthog.com/`
-
 ## Submission Summary
 
 **Project:** Team Manager MCP
 
 **One-liner:** A MongoDB-native MCP team manager that helps a user plan, budget, dispatch, coordinate, and audit specialist agents.
 
-**Live demo:** run `npm run mcp` from an MCP client. Use `npm run harness -- "<request>"` only for the scripted PostHog walkthrough.
+**Live demo:** run `npm run mcp` from an MCP client and ask any complex question that benefits from specialist coordination.
 
 **MongoDB use:** Atlas organizes and oversees the collaboration: agent skills, room plan, task assignment, shared blackboard, scoped memory, group budget, checkpoints, source evidence, and audit.
 
-**Pitch line:** This is not a vendor-selection chatbot or a dashboard. It is the MongoDB-native team manager that turns a vague task into an approved multi-agent room with explicit skills, budgets, priorities, memory boundaries, shared context, and recoverable execution.
+**Pitch line:** This is not a vertical chatbot or a dashboard. It is the MongoDB-native team manager that turns a vague task into an approved multi-agent room with explicit skills, budgets, priorities, memory boundaries, shared context, and recoverable execution.

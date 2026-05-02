@@ -1,6 +1,6 @@
 # Team Manager MCP Demo Guide
 
-Team Manager is meant to be shown from an MCP-capable agent client or from the included terminal harness. There is no dashboard in the demo path.
+Team Manager is meant to be shown from an MCP-capable agent client. There is no dashboard and no scenario-specific script.
 
 ## MCP Client Config
 
@@ -25,75 +25,46 @@ The server logs governance events to stderr while keeping stdout protocol-clean 
 
 ## Judge Prompt
 
-Use this prompt in Claude Code, Claude Desktop, Hermes, Codex, or any MCP host wired to the Team Manager server:
+Use any complex prompt that benefits from multiple specialists. For example:
 
 ```text
-I want to due diligence PostHog as a vendor for my B2B SaaS business in the most efficient way. Use Team Manager to propose the agent room, ask me for approval on measurement weights, token budgets, memory rules, and model choices, then run the approved multi-agent workflow with MongoDB-backed shared context and audit.
+I want to evaluate whether my company should get listed on Coinbase as an exchange or not. Use Team Manager to classify the task, propose the agent room, ask me before starting, use sources I provide, keep private memory private, manage the group token budget, and return an audited recommendation.
 ```
 
 Expected tool sequence:
 
 1. `team_manager_plan_room`
-2. The MCP host asks the user the manager's returned questions. The returned plan includes the routing cascade, versioned capability vectors, model choices, and per-agent token caps.
+2. The MCP host asks the user the manager's returned questions. The returned plan includes task type, routing cascade, versioned capability vectors, model choices, and per-agent token caps.
 3. `team_manager_approve_plan`
 4. `team_manager_set_sources`
 5. `team_manager_start_room`
 6. `team_manager_ingest_sources`
 7. Host-run specialist agents use `team_manager_query_context`, `team_manager_post_blackboard`, `team_manager_write_memory`, `team_manager_record_checkpoint`, and `team_manager_update_budget`
-8. `team_manager_emit_decision`
-9. `team_manager_state` with `includeFullAudit=true`
+8. `team_manager_kill_agent` and `team_manager_resume_agent` if the host kills or loses a worker mid-run
+9. `team_manager_emit_decision`
+10. `team_manager_state` with `includeFullAudit=true`
 
-The older `team_manager_advance`, `team_manager_kill_agent`, and `team_manager_resume_agent` tools are the rehearsed PostHog replay path. Use them only when you want the 60-second scripted demo beat.
+`team_manager_kill_agent` and `team_manager_resume_agent` are checkpoint controls: they record host-side worker failure and return resume context. They do not pretend to kill an OS process.
 
-## Terminal Harness
+## What To Show
 
-If an MCP host is slow or unavailable, run the exact same governance path directly:
+Show the MCP host calling the manager tools and MongoDB receiving the room state:
 
-```bash
-npm run harness -- "I want to due diligence PostHog as a vendor for my B2B SaaS business in the most efficient way."
-```
-
-The harness prints:
-
-- the Team Manager's proposed questions
-- agent fit measurement parameters
-- model profiles and temperature settings
-- per-agent token caps
-- MongoDB-backed memory and context policies
-- capability dispatch from 12 candidates to 5 specialists
-- live source ingestion into `source_documents`
-- blackboard writes and auto-subscriptions
-- memory promotion and summarizer context compression
-- checkpoint write, kill, and resume
-- final audit links from claim to blackboard entry to source document
-
-The harness is a replayable demo trace. The real MCP product surface is the generic tool set above: source registration, source ingestion, blackboard posting, scoped memory, checkpointing, budget governance, and audited decisions.
-
-## Arbitrary Task Demo
-
-For a non-PostHog prompt, do not use the replay tools. Use the generic MCP tools:
-
-```text
-I want to evaluate whether my company should get listed on Coinbase as an exchange or not. Use Team Manager to plan the agent room, ask me before starting, use sources I provide, keep private memory private, and return an audited decision.
-```
-
-The host should then call:
-
-1. `team_manager_plan_room` with the Coinbase-listing request.
-2. `team_manager_approve_plan` after user approval or edits.
-3. `team_manager_set_sources` with live URLs selected by the host or user.
-4. `team_manager_start_room`.
-5. `team_manager_ingest_sources`.
-6. The host-run specialists call the context, blackboard, memory, checkpoint, and budget tools while doing the work.
-
-If no custom sources are registered, `team_manager_start_room` deliberately refuses to ingest the PostHog source pack. That is the guardrail that prevents the generic MCP workflow from pretending a scripted vendor demo is live evidence for another task.
+- the Team Manager's questions before execution
+- classified task type and selected specialists from the broader capability pool
+- routing cascade and weighted capability formula
+- per-agent token caps and group threshold actions
+- arbitrary source registration and source ingestion into `source_documents`
+- blackboard entries and scoped memory cards
+- checkpoint write, host-side interruption record, and resume context
+- final audited decision linking claims to blackboard entries and sources
 
 ## What To Say
 
-Team Manager is a MongoDB-native control plane for multi-agent collaboration. The vendor evaluation is just a legible workload for the judges. MongoDB Atlas organizes and oversees the room: skills in `agent_profiles`, assignments in `tasks` and `groups`, shared context in `blackboard_entries`, scoped memory in `memory_cards`, checkpoints in `agent_performance_records`, and source-linked claims in `audit`.
+Team Manager is a MongoDB-native control plane for multi-agent collaboration. The user can ask any complex question. MongoDB Atlas organizes and oversees the room: skills in `agent_profiles`, assignments in `tasks` and `groups`, shared context in `blackboard_entries`, scoped memory in `memory_cards`, checkpoints in `agent_performance_records`, source evidence in `source_documents`, and final traceability in `audit`.
 
 Lead with the hackathon theme:
 
 > "This is our answer to Multi-Agent Collaboration: a Team Manager MCP server that asks the user how to run the team, initializes the right specialists, allocates token budgets, sets shared-memory boundaries, and uses MongoDB as the durable collaboration state."
 
-Do not present it as a vendor-selection chatbot or a dashboard.
+Do not present it as a vertical chatbot or a dashboard.

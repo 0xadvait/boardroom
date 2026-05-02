@@ -54,10 +54,10 @@ function modelProfile(kind: "manager" | "evidence" | "reviewer" | "summarizer"):
 }
 
 function priority(agent: AgentProfile): PlannedAgent["priority"] {
-  if (agent.agentId === "agent-security" || agent.agentId === "agent-contracts") {
+  if (["agent-legal", "agent-risk", "agent-critic"].includes(agent.agentId)) {
     return "critical";
   }
-  if (agent.agentId === "agent-pricing" || agent.agentId === "agent-integration") {
+  if (["agent-evidence", "agent-technical", "agent-finance", "agent-crypto", "agent-strategy"].includes(agent.agentId)) {
     return "high";
   }
   return "medium";
@@ -65,17 +65,21 @@ function priority(agent: AgentProfile): PlannedAgent["priority"] {
 
 function budgetShare(agent: AgentProfile): number {
   const shares: Record<string, number> = {
-    "agent-security": 0.21,
-    "agent-contracts": 0.19,
-    "agent-pricing": 0.17,
-    "agent-integration": 0.16,
-    "agent-references": 0.13
+    "agent-evidence": 0.18,
+    "agent-technical": 0.15,
+    "agent-market": 0.14,
+    "agent-legal": 0.16,
+    "agent-finance": 0.14,
+    "agent-crypto": 0.16,
+    "agent-risk": 0.13,
+    "agent-strategy": 0.14,
+    "agent-critic": 0.14
   };
   return shares[agent.agentId] ?? 0.14;
 }
 
 function modelForAgent(agent: AgentProfile): ModelProfile {
-  if (agent.agentId === "agent-security" || agent.agentId === "agent-contracts") {
+  if (["agent-legal", "agent-risk", "agent-critic"].includes(agent.agentId)) {
     return modelProfile("reviewer");
   }
   return modelProfile("evidence");
@@ -110,30 +114,50 @@ function capabilityVector(agent: AgentProfile, taskType: string): CapabilityVect
 
 function responsibilities(agent: AgentProfile): string[] {
   const base: Record<string, string[]> = {
-    "agent-security": [
-      "Check trust-center evidence, compliance artifacts, and data-protection posture.",
-      "Write only source-linked compliance findings to the blackboard.",
-      "Escalate missing or scoped security evidence as a procurement gate."
+    "agent-evidence": [
+      "Find reliable primary sources for the user request.",
+      "Extract only source-linked facts into the blackboard.",
+      "Flag missing evidence instead of filling gaps with assumptions."
     ],
-    "agent-pricing": [
-      "Extract pricing model, free-tier limits, and spend-control mechanisms.",
-      "Estimate usage risk for a B2B SaaS rollout.",
-      "Post budget guardrails and commercial risks to the blackboard."
+    "agent-technical": [
+      "Assess technical feasibility, integration path, and implementation risk.",
+      "Translate technical blockers into concrete questions for the user.",
+      "Post architecture or execution constraints to the blackboard."
     ],
-    "agent-references": [
-      "Look for public customer and adoption evidence.",
-      "Separate recognizable proof from marketing claims.",
-      "Vote only after evidence is linked into audit."
+    "agent-market": [
+      "Map market, customer, competitor, and ecosystem implications.",
+      "Separate durable market signals from noisy anecdotes.",
+      "Post opportunity and positioning findings with source links."
     ],
-    "agent-integration": [
-      "Assess APIs, integrations, data export, and implementation fit.",
-      "Identify setup risk and operational dependencies.",
-      "Subscribe to relevant security and pricing discoveries."
+    "agent-legal": [
+      "Identify compliance, regulatory, contractual, and policy gates.",
+      "Subscribe to technical and market findings that create legal exposure.",
+      "Escalate unresolved approval blockers before final synthesis."
     ],
-    "agent-contracts": [
-      "Track procurement blockers, security prerequisites, and contract red flags.",
-      "Auto-subscribe to compliance discoveries from the blackboard.",
-      "Merge final legal gates into the decision record."
+    "agent-finance": [
+      "Estimate cost, ROI, revenue, and budget implications.",
+      "Make assumptions explicit and keep calculations auditable.",
+      "Post commercial tradeoffs to the shared blackboard."
+    ],
+    "agent-crypto": [
+      "Analyze exchange, liquidity, custody, token, and market-structure implications.",
+      "Translate crypto-specific risks into business decision terms.",
+      "Post source-linked crypto market findings and open questions."
+    ],
+    "agent-risk": [
+      "Aggregate cross-functional risks and mitigations.",
+      "Track unresolved blockers raised by other specialists.",
+      "Prevent premature final decisions while critical risks are open."
+    ],
+    "agent-strategy": [
+      "Clarify options, tradeoffs, and second-order effects.",
+      "Keep the room aligned to the user's actual objective.",
+      "Post decision framing and priority conflicts."
+    ],
+    "agent-critic": [
+      "Challenge weak claims and unsupported consensus.",
+      "Detect contradictions between blackboard entries.",
+      "Prepare the final audited recommendation only from cited evidence."
     ]
   };
 
@@ -173,7 +197,7 @@ function routingCascade(agents: PlannedAgent[], totalTokenBudget: number): Routi
       stage: "collaboration_mode",
       decision: "Use a manager-supervised specialist room, not a single autonomous agent.",
       evidence: [
-        "The request needs independent security, pricing, reference, integration, and contract perspectives.",
+        "The request benefits from independent specialist perspectives and one manager enforcing budget, memory, and audit rules.",
         "The manager keeps approval, budget, memory, and final synthesis centralized."
       ]
     },
@@ -195,7 +219,7 @@ function routingCascade(agents: PlannedAgent[], totalTokenBudget: number): Routi
     },
     {
       stage: "role_allocation",
-      decision: "Allocate one specialist to each procurement risk lane.",
+      decision: "Allocate specialists to the highest-scoring capability lanes for this request.",
       evidence: agents.map((agent) => `${agent.name}: ${agent.role}`)
     },
     {
@@ -223,7 +247,7 @@ function routingCascade(agents: PlannedAgent[], totalTokenBudget: number): Routi
 export function buildGovernancePlan(options: {
   runId: string;
   request: string;
-  vendor: string;
+  target: string;
   taskType: string;
   candidates: AgentProfile[];
   totalTokenBudget?: number;
@@ -238,7 +262,7 @@ export function buildGovernancePlan(options: {
     id: `${options.runId}-governance-plan`,
     status: "proposed",
     request: options.request,
-    vendor: options.vendor,
+    target: options.target,
     taskType: options.taskType,
     totalTokenBudget,
     collaborationMode: "manager_supervised_room",
@@ -280,12 +304,12 @@ export function buildGovernancePlan(options: {
           .join(" -> ")}. Should I remove any stage for speed?`,
         "I am thinking of MongoDB as the room state: agent_profiles for skills, tasks/groups for assignment, blackboard_entries for shared context, memory_cards for scoped memory, and audit for claim evidence. Does that collaboration model match the way you want this team to work?",
         "I am thinking of private-by-default memory, team promotion after 3 reuses, and source-linked audit for all decision claims. Should any evidence class stay private?",
-        "I am picking high-accuracy reviewer profiles for security/contracts, faster evidence-worker profiles for pricing/integration/references, and a compact summarizer. Do you prefer speed, cost, or caution?"
+        "I am picking high-accuracy reviewer profiles for risk/critic roles, faster evidence-worker profiles for research and analysis roles, and a compact summarizer. Do you prefer speed, cost, or caution?"
       ],
       assumptions: [
-        "This is a vendor due-diligence workflow, so security and contract risk are higher priority than speed.",
-        "The manager should keep final decision authority with the user instead of letting agents auto-purchase or auto-approve.",
-        "The room should optimize for a credible live demo: visible governance, source-linked claims, and recoverability."
+        "The manager should infer a useful specialist room from the user's request, then ask for approval before execution.",
+        "The manager should keep final decision authority with the user instead of letting agents take irreversible actions.",
+        "The room should optimize for visible governance: source-linked claims, scoped memory, budget control, and recoverability."
       ]
     },
     agents,
@@ -309,7 +333,7 @@ export function governancePlanWrites(plan: GovernancePlan): MongoWrite[] {
         plan_id: plan.id,
         status: plan.status,
         request: plan.request,
-        vendor: plan.vendor,
+        target: plan.target,
         task_type: plan.taskType,
         total_token_budget: plan.totalTokenBudget,
         collaboration_mode: plan.collaborationMode,

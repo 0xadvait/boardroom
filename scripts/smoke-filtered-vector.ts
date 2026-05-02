@@ -9,37 +9,37 @@ async function main() {
 
   const collection = db.collection("memory_cards");
   const teamId = "smoke-team";
-  const ownerAgentId = "agent-security";
+  const ownerAgentId = "agent-legal";
 
   await collection.deleteMany({ demo_scope: "vector-smoke" });
   await collection.insertMany([
     {
       demo_scope: "vector-smoke",
-      content: "Private SOC 2 scope concern for SecurityReview only.",
+      content: "Private regulatory concern for LegalRisk only.",
       visibility: "private",
       owner_agent_id: ownerAgentId,
       team_id: teamId,
-      embedding: pseudoEmbedding("SOC 2 report scope security private"),
+      embedding: pseudoEmbedding("regulatory concern legal private"),
       reuse_count: 1,
       created_at: new Date()
     },
     {
       demo_scope: "vector-smoke",
-      content: "Team-visible pricing guardrail: configure billing limits.",
+      content: "Team-visible budget guardrail: cap worker token spend.",
       visibility: "team",
-      owner_agent_id: "agent-pricing",
+      owner_agent_id: "agent-finance",
       team_id: teamId,
-      embedding: pseudoEmbedding("pricing billing limit guardrail team"),
+      embedding: pseudoEmbedding("budget token limit guardrail team"),
       reuse_count: 3,
       created_at: new Date()
     },
     {
       demo_scope: "vector-smoke",
-      content: "Global vendor checklist for analytics procurement.",
+      content: "Global checklist for source-linked decision reviews.",
       visibility: "global",
-      owner_agent_id: "agent-procurement",
+      owner_agent_id: "agent-critic",
       team_id: "global",
-      embedding: pseudoEmbedding("vendor analytics procurement checklist global"),
+      embedding: pseudoEmbedding("source linked decision review checklist global"),
       reuse_count: 8,
       created_at: new Date()
     },
@@ -57,15 +57,15 @@ async function main() {
       demo_scope: "vector-smoke",
       content: "Other team's billing note that should be excluded by team filter.",
       visibility: "team",
-      owner_agent_id: "agent-pricing",
+      owner_agent_id: "agent-finance",
       team_id: "other-team",
-      embedding: pseudoEmbedding("pricing billing limit other team"),
+      embedding: pseudoEmbedding("budget token limit other team"),
       reuse_count: 1,
       created_at: new Date()
     }
   ]);
 
-  const queryVector = pseudoEmbedding("SOC 2 pricing procurement guardrails");
+  const queryVector = pseudoEmbedding("regulatory budget decision guardrails");
   const pipeline = [
     {
       $vectorSearch: {

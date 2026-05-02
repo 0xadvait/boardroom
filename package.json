@@ -8,9 +8,7 @@
     "typecheck": "tsc --noEmit",
     "atlas:init": "tsx scripts/init-atlas.ts",
     "atlas:smoke": "tsx scripts/smoke-filtered-vector.ts",
-    "seed": "tsx scripts/seed-demo.ts",
-    "mcp": "tsx scripts/mcp-server.ts",
-    "harness": "tsx scripts/terminal-harness.ts"
+    "mcp": "tsx scripts/mcp-server.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

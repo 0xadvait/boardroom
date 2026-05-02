@@ -242,7 +242,7 @@ export interface GovernancePlan {
   id: string;
   status: PlanStatus;
   request: string;
-  vendor: string;
+  target: string;
   taskType: string;
   totalTokenBudget: number;
   collaborationMode: "single_agent" | "manager_supervised_room" | "parallel_specialists";
@@ -296,7 +296,7 @@ export interface DemoState {
   taskId: string;
   groupId: string;
   teamId: string;
-  vendor: string;
+  target: string;
   taskType: string;
   taskPrompt: string;
   status: DemoStatus;
@@ -323,7 +323,7 @@ export interface DemoState {
     votes: Record<string, "buy" | "hold" | "no_buy">;
   };
   mongo: {
-    mode: "unknown" | "atlas" | "replay";
+    mode: "unknown" | "atlas" | "local";
     dbName: string;
     lastError?: string;
   };
