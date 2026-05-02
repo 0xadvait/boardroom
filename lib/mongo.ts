@@ -1,7 +1,10 @@
 import { MongoClient, type Db } from "mongodb";
-import type { DemoState, MongoWrite } from "./types";
+import { pseudoEmbedding } from "./scoring";
+import type { AgentProfile, RoomState, MongoWrite, ProvenSkill, TeamManagerPreferences } from "./types";
 
-const DEMO_SCOPE = "team-manager-demo";
+const ROOM_SCOPE = "team-manager-room";
+const REGISTRY_SCOPE = "team-manager-agent-registry";
+const SETTINGS_SCOPE = "team-manager-settings";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -65,7 +68,8 @@ export async function ensureCoreCollectionsAndIndexes(): Promise<void> {
     "groups",
     "audit",
     "source_documents",
-    "governance_plans"
+    "governance_plans",
+    "team_manager_settings"
   ];
   for (const name of collectionNames) {
     if (!(await collectionExists(db, name))) {
@@ -84,9 +88,10 @@ export async function ensureCoreCollectionsAndIndexes(): Promise<void> {
     db.collection("source_documents").createIndex({ fetched_at: -1 }),
     db.collection("governance_plans").createIndex({ plan_id: 1 }),
     db.collection("governance_plans").createIndex({ status: 1, created_at: -1 }),
+    db.collection("team_manager_settings").createIndex({ settings_scope: 1 }, { unique: true }),
     db.collection("groups").createIndex({ team_id: 1 }),
     db.collection("audit").createIndex({ task_id: 1 }),
-    db.collection("audit").createIndex({ demo_run_id: 1 })
+    db.collection("audit").createIndex({ room_run_id: 1 })
   ]);
 }
 
@@ -166,7 +171,7 @@ export async function createAtlasVectorSearchIndexes(): Promise<void> {
   });
 }
 
-export async function resetMongoDemo(state: DemoState): Promise<{ connected: boolean; error?: string }> {
+export async function resetMongoRoom(state: RoomState): Promise<{ connected: boolean; error?: string }> {
   try {
     const db = await getMongoDb();
     if (!db) {
@@ -184,7 +189,7 @@ export async function resetMongoDemo(state: DemoState): Promise<{ connected: boo
       "source_documents",
       "governance_plans"
     ];
-    await Promise.all(collections.map((name) => db.collection(name).deleteMany({ demo_scope: DEMO_SCOPE })));
+    await Promise.all(collections.map((name) => db.collection(name).deleteMany({ room_scope: ROOM_SCOPE })));
 
     state.mongo.mode = "atlas";
     state.mongo.dbName = mongoDbName();
@@ -198,16 +203,178 @@ export async function resetMongoDemo(state: DemoState): Promise<{ connected: boo
   }
 }
 
-function decorateDocument(document: Record<string, unknown>, state: DemoState): Record<string, unknown> {
+function agentProfileFromDocument(document: Record<string, unknown>): AgentProfile {
+  const agentId = String(document.agent_id ?? document._id);
+  const name = String(document.name ?? agentId);
+  const role = String(document.role ?? "Registered specialist");
+  const description = String(document.description ?? role);
+  const skills = Array.isArray(document.skills) ? document.skills.map(String) : [];
+  const capabilities = Array.isArray(document.capabilities) ? document.capabilities.map(String) : [];
+  const provenSkills = (document.proven_skills ?? {}) as Record<string, ProvenSkill>;
+  const avgDurationMs = Number(document.avg_duration_ms ?? 45_000);
+  const tokenEfficiency = Number(document.token_efficiency ?? 0.75);
+  const lastPerformedAt =
+    document.last_performed_at instanceof Date
+      ? document.last_performed_at.toISOString()
+      : String(document.last_performed_at ?? new Date().toISOString());
+  const embedding = Array.isArray(document.description_embedding)
+    ? document.description_embedding.map(Number)
+    : pseudoEmbedding(`${name} ${role} ${description} ${skills.join(" ")}`);
+
   return {
-    demo_scope: DEMO_SCOPE,
-    demo_run_id: state.runId,
+    agentId,
+    name,
+    role,
+    description,
+    skills,
+    capabilities,
+    descriptionEmbedding: embedding,
+    provenSkills,
+    avgDurationMs,
+    tokenEfficiency,
+    lastPerformedAt,
+    status: "candidate",
+    selected: false,
+    tokensUsed: 0,
+    currentStep: "Loaded from MongoDB agent registry"
+  };
+}
+
+export async function loadRegisteredAgentProfiles(): Promise<AgentProfile[]> {
+  const db = await getMongoDb();
+  if (!db) {
+    return [];
+  }
+
+  await ensureCoreCollectionsAndIndexes();
+  const documents = await db
+    .collection("agent_profiles")
+    .find({
+      registry_scope: REGISTRY_SCOPE,
+      profile_kind: "registered_agent"
+    })
+    .sort({ updated_at: -1 })
+    .limit(100)
+    .toArray();
+
+  return documents.map((document) => agentProfileFromDocument(document as Record<string, unknown>));
+}
+
+export async function upsertRegisteredAgentProfiles(
+  profiles: AgentProfile[],
+  options: { replaceRegistry?: boolean } = {}
+): Promise<{ connected: boolean; count: number; error?: string }> {
+  try {
+    const db = await getMongoDb();
+    if (!db) {
+      return { connected: false, count: 0 };
+    }
+
+    await ensureCoreCollectionsAndIndexes();
+    const collection = db.collection("agent_profiles");
+    if (options.replaceRegistry) {
+      await collection.deleteMany({
+        registry_scope: REGISTRY_SCOPE,
+        profile_kind: "registered_agent"
+      });
+    }
+
+    for (const profile of profiles) {
+      await collection.updateOne(
+        {
+          registry_scope: REGISTRY_SCOPE,
+          profile_kind: "registered_agent",
+          agent_id: profile.agentId
+        },
+        {
+          $set: {
+            registry_scope: REGISTRY_SCOPE,
+            profile_kind: "registered_agent",
+            agent_id: profile.agentId,
+            name: profile.name,
+            role: profile.role,
+            description: profile.description,
+            skills: profile.skills,
+            capabilities: profile.capabilities,
+            description_embedding: profile.descriptionEmbedding,
+            proven_skills: profile.provenSkills,
+            avg_duration_ms: profile.avgDurationMs,
+            token_efficiency: profile.tokenEfficiency,
+            last_performed_at: new Date(profile.lastPerformedAt),
+            updated_at: new Date()
+          },
+          $setOnInsert: {
+            created_at: new Date()
+          }
+        },
+        { upsert: true }
+      );
+    }
+
+    return { connected: true, count: profiles.length };
+  } catch (error) {
+    return { connected: false, count: 0, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function loadTeamManagerPreferences(): Promise<TeamManagerPreferences | null> {
+  const db = await getMongoDb();
+  if (!db) {
+    return null;
+  }
+
+  await ensureCoreCollectionsAndIndexes();
+  const document = await db.collection("team_manager_settings").findOne({
+    settings_scope: SETTINGS_SCOPE
+  });
+  if (!document?.preferences || typeof document.preferences !== "object") {
+    return null;
+  }
+
+  return document.preferences as TeamManagerPreferences;
+}
+
+export async function upsertTeamManagerPreferences(
+  preferences: TeamManagerPreferences
+): Promise<{ connected: boolean; error?: string }> {
+  try {
+    const db = await getMongoDb();
+    if (!db) {
+      return { connected: false };
+    }
+
+    await ensureCoreCollectionsAndIndexes();
+    await db.collection("team_manager_settings").updateOne(
+      { settings_scope: SETTINGS_SCOPE },
+      {
+        $set: {
+          settings_scope: SETTINGS_SCOPE,
+          preferences,
+          updated_at: new Date(preferences.updatedAt)
+        },
+        $setOnInsert: {
+          created_at: new Date()
+        }
+      },
+      { upsert: true }
+    );
+
+    return { connected: true };
+  } catch (error) {
+    return { connected: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function decorateDocument(document: Record<string, unknown>, state: RoomState): Record<string, unknown> {
+  return {
+    room_scope: ROOM_SCOPE,
+    room_run_id: state.runId,
     ...document
   };
 }
 
 export async function applyMongoWrites(
-  state: DemoState,
+  state: RoomState,
   writes: MongoWrite[]
 ): Promise<{ connected: boolean; error?: string }> {
   try {

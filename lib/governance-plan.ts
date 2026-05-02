@@ -1,4 +1,4 @@
-import type { AgentProfile, CapabilityVector, GovernancePlan, ModelProfile, MongoWrite, PlannedAgent, RoutingStage } from "./types";
+import type { AgentProfile, CapabilityVector, GovernancePlan, ModelProfile, MongoWrite, PlannedAgent, RoutingStage, TeamManagerPreferences } from "./types";
 import { scoreAgents } from "./scoring";
 
 const DEFAULT_WEIGHTS = {
@@ -10,6 +10,8 @@ const DEFAULT_WEIGHTS = {
 };
 
 const TASK_COMPLEXITY_MULTIPLIER: Record<string, number> = {
+  aesthetic_product_work: 1.08,
+  trading_agent_system: 1.35,
   crypto_market_decision: 1.3,
   legal_risk: 1.25,
   technical_decision: 1.18,
@@ -29,77 +31,127 @@ function configuredModel(
   fallbackProvider: ModelProfile["provider"],
   reason: string,
   temperature: number,
-  maxOutputTokens: number
+  maxOutputTokens: number,
+  extra: Pick<ModelProfile, "reasoningEffort" | "executionClass"> = {},
+  preferFallbackSlot = false
 ): ModelProfile {
-  const configured = envKeys.map((key) => process.env[key]).find((value): value is string => Boolean(value));
+  const configured = preferFallbackSlot ? fallbackSlot : envKeys.map((key) => process.env[key]).find((value): value is string => Boolean(value));
   return {
     provider: configured ? fallbackProvider : "configurable",
     model: configured ?? fallbackSlot,
     temperature,
     maxOutputTokens,
+    ...extra,
     reason: configured ? reason : `${reason} Concrete model is selected by the MCP host or by env config at runtime.`
   };
 }
 
-function modelProfile(kind: "manager" | "evidence" | "reviewer" | "summarizer"): ModelProfile {
+function modelProfile(kind: "manager" | "logic" | "aesthetic" | "summarizer", preferences?: TeamManagerPreferences): ModelProfile {
   if (kind === "manager") {
+    const preferred = preferences?.managerModel;
     return configuredModel(
-      ["TEAM_MANAGER_MANAGER_MODEL", "BOARDROOM_MANAGER_MODEL"],
-      "runtime manager planning model",
-      "host",
-      "The manager needs planning quality, tradeoff explanation, and user negotiation more than raw speed.",
+      ["TEAM_MANAGER_MANAGER_MODEL", "TEAM_MANAGER_LOGIC_MODEL", "BOARDROOM_MANAGER_MODEL"],
+      preferred ?? "gpt-5.5",
+      "openai",
+      "The manager needs the strongest reasoning profile for planning, tradeoffs, budget decisions, and user negotiation.",
       0.2,
-      2400
+      2400,
+      {
+        reasoningEffort: (preferences?.logicReasoningEffort ??
+          process.env.TEAM_MANAGER_MANAGER_REASONING_EFFORT ??
+          process.env.TEAM_MANAGER_LOGIC_REASONING_EFFORT ??
+          "xhigh") as ModelProfile["reasoningEffort"],
+        executionClass: "manager"
+      },
+      Boolean(preferred)
     );
   }
 
-  if (kind === "reviewer") {
+  if (kind === "logic") {
+    const preferred = preferences?.logicModel;
     return configuredModel(
-      ["TEAM_MANAGER_REVIEW_MODEL", "BOARDROOM_REVIEW_MODEL"],
-      "runtime high-accuracy reviewer model",
-      "host",
-      "Risk, legal, and critic gates need the most reliable reviewer profile available in the MCP host.",
+      ["TEAM_MANAGER_REVIEW_MODEL", "TEAM_MANAGER_LOGIC_MODEL", "TEAM_MANAGER_SPECIALIST_MODEL", "BOARDROOM_REVIEW_MODEL"],
+      preferred ?? "gpt-5.5",
+      "openai",
+      "Logical, regulatory, financial, technical, and synthesis work should use the strongest reasoning profile available locally.",
       0.1,
-      1800
+      2200,
+      {
+        reasoningEffort: (preferences?.logicReasoningEffort ??
+          process.env.TEAM_MANAGER_REVIEW_REASONING_EFFORT ??
+          process.env.TEAM_MANAGER_LOGIC_REASONING_EFFORT ??
+          "xhigh") as ModelProfile["reasoningEffort"],
+        executionClass: "logic"
+      },
+      Boolean(preferred)
+    );
+  }
+
+  if (kind === "aesthetic") {
+    const preferred = preferences?.aestheticModel;
+    return configuredModel(
+      ["TEAM_MANAGER_AESTHETIC_MODEL", "TEAM_MANAGER_CLAUDE_MODEL", "BOARDROOM_AESTHETIC_MODEL"],
+      preferred ?? "claude-opus-4-7",
+      "claude",
+      "UI, copy, README, narrative, and product-polish work benefits from a strong aesthetic and writing model profile.",
+      0.35,
+      2600,
+      {
+        executionClass: "aesthetic"
+      },
+      Boolean(preferred)
     );
   }
 
   if (kind === "summarizer") {
+    const preferred = preferences?.summarizerModel;
     return configuredModel(
-      ["TEAM_MANAGER_SUMMARIZER_MODEL", "BOARDROOM_SUMMARIZER_MODEL"],
-      "runtime compact summarizer model",
-      "configurable",
-      "Summarization is latency-sensitive and benefits from a small, deterministic model profile.",
+      ["TEAM_MANAGER_SUMMARIZER_MODEL", "TEAM_MANAGER_LOGIC_MODEL", "BOARDROOM_SUMMARIZER_MODEL"],
+      preferred ?? "gpt-5.5",
+      "openai",
+      "Summarization must preserve decision logic, evidence links, and memory boundaries, so it uses the local reasoning profile.",
       0.1,
-      1200
+      1400,
+      {
+        reasoningEffort: (preferences?.logicReasoningEffort ??
+          process.env.TEAM_MANAGER_SUMMARIZER_REASONING_EFFORT ??
+          process.env.TEAM_MANAGER_LOGIC_REASONING_EFFORT ??
+          "xhigh") as ModelProfile["reasoningEffort"],
+        executionClass: "summarization"
+      },
+      Boolean(preferred)
     );
   }
 
-  return configuredModel(
-    ["TEAM_MANAGER_SPECIALIST_MODEL", "BOARDROOM_SPECIALIST_MODEL"],
-    "runtime fast evidence-worker model",
-    "configurable",
-    "Evidence extraction and structured findings should be fast, low-temperature, and cheap enough for parallel specialists.",
-    0.2,
-    1700
-  );
+  return modelProfile("logic", preferences);
 }
 
 function priority(agent: AgentProfile): PlannedAgent["priority"] {
   if (["agent-legal", "agent-risk", "agent-critic"].includes(agent.agentId)) {
     return "critical";
   }
-  if (["agent-evidence", "agent-technical", "agent-finance", "agent-crypto", "agent-strategy"].includes(agent.agentId)) {
+  if (["agent-evidence", "agent-technical", "agent-finance", "agent-crypto", "agent-strategy", "agent-design"].includes(agent.agentId)) {
     return "high";
   }
   return "medium";
 }
 
-function modelForAgent(agent: AgentProfile): ModelProfile {
-  if (["agent-legal", "agent-risk", "agent-critic"].includes(agent.agentId)) {
-    return modelProfile("reviewer");
+function isAestheticAgent(agent: AgentProfile): boolean {
+  return (
+    agent.agentId === "agent-design" ||
+    agent.skills.some((skill) =>
+      ["aesthetic_product_work", "ui_polish", "ux", "frontend", "visual_design", "copywriting", "text_polish", "readme", "presentation_narrative"].includes(
+        skill
+      )
+    )
+  );
+}
+
+function modelForAgent(agent: AgentProfile, taskType: string, preferences?: TeamManagerPreferences): ModelProfile {
+  if (taskType === "aesthetic_product_work" || isAestheticAgent(agent)) {
+    return modelProfile("aesthetic", preferences);
   }
-  return modelProfile("evidence");
+  return modelProfile("logic", preferences);
 }
 
 function roughTokenCount(text: string): number {
@@ -248,6 +300,11 @@ function responsibilities(agent: AgentProfile): string[] {
       "Translate technical blockers into concrete questions for the user.",
       "Post architecture or execution constraints to the blackboard."
     ],
+    "agent-design": [
+      "Improve UI, copy, README, presentation narrative, and aesthetic quality when the task has a product-facing surface.",
+      "Translate polish work into concrete implementation or editorial changes.",
+      "Keep aesthetic recommendations grounded in the user's audience and the current artifact."
+    ],
     "agent-market": [
       "Map market, customer, competitor, and ecosystem implications.",
       "Separate durable market signals from noisy anecdotes.",
@@ -267,6 +324,11 @@ function responsibilities(agent: AgentProfile): string[] {
       "Analyze exchange, liquidity, custody, token, and market-structure implications.",
       "Translate crypto-specific risks into business decision terms.",
       "Post source-linked crypto market findings and open questions."
+    ],
+    "agent-trading": [
+      "Design trading-agent architecture, market-data flow, backtesting, execution controls, and risk limits.",
+      "Separate strategy logic from safety, monitoring, and operator override requirements.",
+      "Post implementation and risk-control findings to the blackboard."
     ],
     "agent-risk": [
       "Aggregate cross-functional risks and mitigations.",
@@ -296,26 +358,37 @@ function successCriteria(agent: AgentProfile): string[] {
   ];
 }
 
-function plannedAgent(agent: AgentProfile, tokenBudget: number, taskType: string): PlannedAgent {
+function plannedAgent(agent: AgentProfile, tokenBudget: number, taskType: string, preferences?: TeamManagerPreferences): PlannedAgent {
   return {
     agentId: agent.agentId,
     name: agent.name,
     role: agent.role,
     priority: priority(agent),
     tokenBudget,
-    model: modelForAgent(agent),
+    model: modelForAgent(agent, taskType, preferences),
     capabilityVector: capabilityVector(agent, taskType),
     delegationCapabilityScope: agent.capabilities.filter((capability) =>
       ["cite_sources", "write_blackboard", "read_blackboard", "request_evidence", "read_public_web"].includes(capability)
     ),
-    memoryScopes: ["private", "team", "global"],
+    memoryScopes:
+      preferences?.defaultMemoryVisibility === "team"
+        ? ["team", "global"]
+        : preferences?.defaultMemoryVisibility === "global"
+          ? ["global"]
+          : ["private", "team", "global"],
     blackboardTopK: 5,
     responsibilities: responsibilities(agent),
     successCriteria: successCriteria(agent)
   };
 }
 
-function plannedAgents(agents: AgentProfile[], totalBudget: number, taskType: string, request: string): PlannedAgent[] {
+function plannedAgents(
+  agents: AgentProfile[],
+  totalBudget: number,
+  taskType: string,
+  request: string,
+  preferences?: TeamManagerPreferences
+): PlannedAgent[] {
   const reserve = Math.round(totalBudget * reserveRatio(taskType, request));
   const allocatable = Math.max(10_000, totalBudget - reserve);
   const demands = agents.map((agent) => budgetDemand(agent, taskType));
@@ -323,7 +396,7 @@ function plannedAgents(agents: AgentProfile[], totalBudget: number, taskType: st
 
   return agents.map((agent, index) => {
     const tokenBudget = Math.max(2500, Math.round((allocatable * (demands[index] / demandTotal)) / 100) * 100);
-    return plannedAgent(agent, tokenBudget, taskType);
+    return plannedAgent(agent, tokenBudget, taskType, preferences);
   });
 }
 
@@ -436,12 +509,13 @@ export function buildGovernancePlan(options: {
   taskType: string;
   candidates: AgentProfile[];
   totalTokenBudget?: number;
+  preferences?: TeamManagerPreferences;
 }): GovernancePlan {
   const ranked = scoreAgents(options.request, options.taskType, options.candidates);
-  const selected = ranked.slice(0, 5);
+  const selected = ranked.slice(0, Math.min(8, Math.max(1, options.preferences?.defaultMaxAgents ?? 5)));
   const estimatedTotalBudget = estimateTotalTokenBudget(options.request, options.taskType, selected);
   const totalTokenBudget = options.totalTokenBudget ?? estimatedTotalBudget;
-  const agents = plannedAgents(selected, totalTokenBudget, options.taskType, options.request);
+  const agents = plannedAgents(selected, totalTokenBudget, options.taskType, options.request, options.preferences);
   const totalReserveRatio = reserveRatio(options.taskType, options.request);
   const managerReserve = Math.round(totalTokenBudget * (totalReserveRatio / 2));
   const summarizerReserve = Math.round(totalTokenBudget * (totalReserveRatio / 2));
@@ -470,13 +544,13 @@ export function buildGovernancePlan(options: {
       warningAt: 0.7,
       summarizeAt: 0.9,
       hardStopAt: 1,
-      hardStopAction: "abort",
+      hardStopAction: options.preferences?.budgetHardStopAction ?? "abort",
       managerReserve,
       summarizerReserve
     },
     memoryPolicy: {
       visibility: ["private", "team", "global"],
-      defaultVisibility: "private",
+      defaultVisibility: options.preferences?.defaultMemoryVisibility ?? "private",
       promotionRule: "Promote to team memory after 3 distinct agents reuse or cite the item.",
       sensitiveDataRule: "Keep credentials, PII, private contracts, and unverified claims private unless the user approves promotion."
     },
@@ -489,10 +563,10 @@ export function buildGovernancePlan(options: {
       blackboardTopK: 5,
       memoryTopK: 5,
       sourceTopK: 6,
-      requireSourceLinkedClaims: true
+      requireSourceLinkedClaims: options.preferences?.requireSourceLinkedClaims ?? true
     },
     teamManager: {
-      model: modelProfile("manager"),
+      model: modelProfile("manager", options.preferences),
       questionsForUser: [
         `I am thinking of measuring agent fit as 25% task relevance, 35% historical success, 10% recency, 15% latency, and 15% token efficiency. Should token efficiency be weighted higher for this run?`,
         `I am thinking of initializing ${agents.map((agent) => agent.name).join(", ")}. Is any specialist missing or unnecessary?`,
@@ -502,7 +576,7 @@ export function buildGovernancePlan(options: {
           .join(" -> ")}. Should I remove any stage for speed?`,
         "I am thinking of MongoDB as the room state: agent_profiles for skills, tasks/groups for assignment, blackboard_entries for shared context, memory_cards for scoped memory, and audit for claim evidence. Does that collaboration model match the way you want this team to work?",
         "I am thinking of private-by-default memory, team promotion after 3 reuses, and source-linked audit for all decision claims. Should any evidence class stay private?",
-        "I am assigning execution profiles rather than hard-coded model IDs: high-accuracy reviewer slots for risk/critic roles, faster evidence-worker slots for research and analysis roles, and a compact summarizer slot. Do you prefer speed, cost, or caution?"
+        `I am using your local preferences: optimization=${options.preferences?.optimizationPreference ?? "balanced"}, source_provider=${options.preferences?.sourceProviderPreference ?? "auto"}, max_agents=${options.preferences?.defaultMaxAgents ?? 5}, hard_stop=${options.preferences?.budgetHardStopAction ?? "abort"}. Do you want to change any of these before agents start?`
       ],
       assumptions: [
         "The manager should infer a useful specialist room from the user's request, then ask for approval before execution.",

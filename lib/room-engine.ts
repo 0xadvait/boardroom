@@ -1,17 +1,18 @@
-import type { AgentProfile, DemoState, MongoDocEvent, MongoWrite, TimelineEvent } from "./types";
-import { createAgentProfiles, DEFAULT_SOURCES, TASK_PROMPT } from "./demo-data";
+import type { AgentProfile, RoomState, MongoDocEvent, MongoWrite, TimelineEvent } from "./types";
+import { createColdStartAgentTemplates, DEFAULT_TASK_PROMPT, EMPTY_SOURCE_REGISTRY } from "./agent-registry";
 import { fetchSources, sourceDocument } from "./live-sources";
+import { defaultPreferences } from "./preferences";
 import { scoreAgents } from "./scoring";
 
 function now(): string {
   return new Date().toISOString();
 }
 
-function id(prefix: string, state: DemoState, suffix = state.step): string {
+function id(prefix: string, state: RoomState, suffix = state.step): string {
   return `${state.runId}-${prefix}-${suffix}`;
 }
 
-function pushMongoEvent(state: DemoState, collection: string, operation: MongoDocEvent["operation"], document: Record<string, unknown>) {
+function pushMongoEvent(state: RoomState, collection: string, operation: MongoDocEvent["operation"], document: Record<string, unknown>) {
   state.mongoDocs = [
     {
       id: id(`mongo-${collection}-${operation}`, state, state.mongoDocs.length + state.step + 1),
@@ -24,7 +25,7 @@ function pushMongoEvent(state: DemoState, collection: string, operation: MongoDo
   ].slice(0, 18);
 }
 
-function timeline(state: DemoState, layer: TimelineEvent["layer"], label: string, detail: string, writes: MongoWrite[] = []) {
+function timeline(state: RoomState, layer: TimelineEvent["layer"], label: string, detail: string, writes: MongoWrite[] = []) {
   const event: TimelineEvent = {
     id: id(`timeline-${layer}`, state, state.timeline.length + state.step + 1),
     layer,
@@ -49,7 +50,7 @@ function timeline(state: DemoState, layer: TimelineEvent["layer"], label: string
   pushMongoEvent(state, "audit", "insertOne", { layer, label, detail });
 }
 
-export function createInitialState(): DemoState {
+export function createInitialState(): RoomState {
   const createdAt = now();
   const runId = `run-${Date.now()}`;
   return {
@@ -59,7 +60,7 @@ export function createInitialState(): DemoState {
     teamId: "team-manager-room",
     target: process.env.TEAM_MANAGER_TARGET ?? "custom",
     taskType: "general_decision",
-    taskPrompt: TASK_PROMPT,
+    taskPrompt: DEFAULT_TASK_PROMPT,
     status: "idle",
     step: 0,
     createdAt,
@@ -73,7 +74,8 @@ export function createInitialState(): DemoState {
       summaryReplacementTokens: 0,
       actionAt100: "abort"
     },
-    candidates: createAgentProfiles(),
+    preferences: defaultPreferences(createdAt),
+    candidates: createColdStartAgentTemplates(),
     selectedAgents: [],
     blackboard: [],
     memoryCards: [],
@@ -91,7 +93,7 @@ export function createInitialState(): DemoState {
     ],
     voiceEvents: [],
     mongoDocs: [],
-    sources: DEFAULT_SOURCES.map((source) => ({ ...source, status: "pending" })),
+    sources: EMPTY_SOURCE_REGISTRY.map((source) => ({ ...source, status: "pending" })),
     mongo: {
       mode: "unknown",
       dbName: process.env.TEAM_MANAGER_DB ?? process.env.BOARDROOM_DB ?? "team_manager"
@@ -99,8 +101,8 @@ export function createInitialState(): DemoState {
   };
 }
 
-export async function ingestLiveSources(state: DemoState): Promise<{ state: DemoState; writes: MongoWrite[] }> {
-  const working = structuredClone(state) as DemoState;
+export async function ingestLiveSources(state: RoomState): Promise<{ state: RoomState; writes: MongoWrite[] }> {
+  const working = structuredClone(state) as RoomState;
   const writes: MongoWrite[] = [];
   const fetched = await fetchSources(working.sources, working.taskPrompt);
   working.sources = fetched;
@@ -137,8 +139,8 @@ export async function ingestLiveSources(state: DemoState): Promise<{ state: Demo
   return { state: working, writes };
 }
 
-export function spawnTeamRoom(state: DemoState): { state: DemoState; writes: MongoWrite[] } {
-  const working = structuredClone(state) as DemoState;
+export function spawnTeamRoom(state: RoomState): { state: RoomState; writes: MongoWrite[] } {
+  const working = structuredClone(state) as RoomState;
   const writes: MongoWrite[] = [];
   if (working.governancePlan?.status === "approved") {
     working.budget.total = working.governancePlan.totalTokenBudget;
@@ -162,7 +164,8 @@ export function spawnTeamRoom(state: DemoState): { state: DemoState; writes: Mon
     collection: "agent_profiles",
     operation: "insertMany",
     documents: working.candidates.map((agent: AgentProfile) => ({
-      _id: agent.agentId,
+      _id: `${working.runId}-${agent.agentId}`,
+      profile_kind: "room_candidate_snapshot",
       agent_id: agent.agentId,
       name: agent.name,
       role: agent.role,

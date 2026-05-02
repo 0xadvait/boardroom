@@ -2,6 +2,16 @@ import type { AgentProfile, SourceRef } from "./types";
 import { pseudoEmbedding } from "./scoring";
 
 const defaultTaskType = "general_decision";
+const taskTypes = new Set([
+  "aesthetic_product_work",
+  "trading_agent_system",
+  "crypto_market_decision",
+  "technical_decision",
+  "procurement_decision",
+  "market_strategy",
+  "legal_risk",
+  "financial_analysis"
+]);
 
 function agent(
   agentId: string,
@@ -15,6 +25,27 @@ function agent(
   tokenEfficiency: number,
   lastPerformedAt: string
 ): AgentProfile {
+  const avgTokens = Math.round(6800 / tokenEfficiency);
+  const provenSkills: AgentProfile["provenSkills"] = {
+    [defaultTaskType]: {
+      successRate,
+      avgDurationMs,
+      avgTokens,
+      runs: Math.round(20 + successRate * 80)
+    }
+  };
+
+  for (const skill of skills) {
+    if (taskTypes.has(skill)) {
+      provenSkills[skill] = {
+        successRate,
+        avgDurationMs,
+        avgTokens: Math.round(avgTokens * 1.08),
+        runs: Math.round(8 + successRate * 24)
+      };
+    }
+  }
+
   return {
     agentId,
     name,
@@ -23,14 +54,7 @@ function agent(
     skills,
     capabilities,
     descriptionEmbedding: pseudoEmbedding(`${name} ${role} ${description} ${skills.join(" ")}`),
-    provenSkills: {
-      [defaultTaskType]: {
-        successRate,
-        avgDurationMs,
-        avgTokens: Math.round(6800 / tokenEfficiency),
-        runs: Math.round(20 + successRate * 80)
-      }
-    },
+    provenSkills,
     avgDurationMs,
     tokenEfficiency,
     lastPerformedAt,
@@ -41,9 +65,9 @@ function agent(
   };
 }
 
-export const DEFAULT_SOURCES: SourceRef[] = [];
+export const EMPTY_SOURCE_REGISTRY: SourceRef[] = [];
 
-export function createAgentProfiles(): AgentProfile[] {
+export function createColdStartAgentTemplates(): AgentProfile[] {
   return [
     agent(
       "agent-evidence",
@@ -56,6 +80,66 @@ export function createAgentProfiles(): AgentProfile[] {
       41_000,
       0.88,
       "2026-05-02T10:50:00+01:00"
+    ),
+    agent(
+      "agent-design",
+      "DesignPolish",
+      "UI, text polish, and aesthetic quality specialist",
+      "Improves interface quality, visual hierarchy, copy, README clarity, presentation narrative, and aesthetic polish for product-facing work.",
+      ["aesthetic_product_work", "ui_polish", "ux", "frontend", "visual_design", "copywriting", "text_polish", "readme", "presentation_narrative"],
+      ["review_ui", "polish_text", "write_blackboard", "record_checkpoint"],
+      0.9,
+      39_000,
+      0.86,
+      "2026-05-02T11:20:00+01:00"
+    ),
+    agent(
+      "agent-frontend",
+      "FrontendCraft",
+      "Frontend UI implementation and interaction specialist",
+      "Builds and reviews product UI, responsive layouts, component structure, interaction states, and implementation polish.",
+      ["aesthetic_product_work", "frontend", "ui_polish", "design_system", "responsive_layout", "interaction_design"],
+      ["review_ui", "plan_rollout", "write_blackboard", "record_checkpoint"],
+      0.87,
+      46_000,
+      0.82,
+      "2026-05-02T11:18:00+01:00"
+    ),
+    agent(
+      "agent-copy",
+      "NarrativeEditor",
+      "README, pitch, and text-polish specialist",
+      "Polishes README structure, product copy, run scripts, submission language, and public-facing narrative without changing technical claims.",
+      ["aesthetic_product_work", "copywriting", "text_polish", "readme", "presentation_narrative", "presentation"],
+      ["polish_text", "write_blackboard", "record_checkpoint"],
+      0.92,
+      34_000,
+      0.9,
+      "2026-05-02T11:24:00+01:00"
+    ),
+    agent(
+      "agent-ux",
+      "ProductUX",
+      "User experience and product-flow specialist",
+      "Reviews user flows, information architecture, interaction clarity, adoption friction, and stakeholder-facing product experience.",
+      ["aesthetic_product_work", "ux", "user_impact", "workflow", "adoption", "information_architecture"],
+      ["review_ui", "write_blackboard", "request_evidence"],
+      0.86,
+      42_000,
+      0.85,
+      "2026-05-02T11:15:00+01:00"
+    ),
+    agent(
+      "agent-presentation",
+      "PresentationCoach",
+      "Submission and presentation polish specialist",
+      "Turns technical work into crisp run flow, public submission copy, audience-facing narrative, and presentation-ready wording.",
+      ["aesthetic_product_work", "presentation_narrative", "presentation", "copywriting", "brand", "text_polish"],
+      ["polish_text", "write_blackboard", "record_checkpoint"],
+      0.88,
+      37_000,
+      0.88,
+      "2026-05-02T11:26:00+01:00"
     ),
     agent(
       "agent-technical",
@@ -116,6 +200,18 @@ export function createAgentProfiles(): AgentProfile[] {
       55_000,
       0.78,
       "2026-04-27T09:00:00+01:00"
+    ),
+    agent(
+      "agent-trading",
+      "TradingSystems",
+      "Trading-agent architecture and market-risk specialist",
+      "Designs trading-agent systems, market-data pipelines, backtesting loops, execution controls, risk limits, and monitoring for automated trading workflows.",
+      ["trading_agent_system", "market_data", "backtesting", "execution_strategy", "risk_limits", "portfolio", "trading"],
+      ["read_public_web", "check_api", "write_blackboard", "record_checkpoint", "query_context"],
+      0.84,
+      57_000,
+      0.79,
+      "2026-05-02T11:08:00+01:00"
     ),
     agent(
       "agent-ops",
@@ -192,5 +288,5 @@ export function createAgentProfiles(): AgentProfile[] {
   ];
 }
 
-export const TASK_PROMPT =
-  "Evaluate an important decision or complex task. Plan the specialist room, enforce source-linked claims, keep scoped memory boundaries, manage a group token budget, and return an audited recommendation.";
+export const DEFAULT_TASK_PROMPT =
+  "Run a complex task with a specialist room. Plan the agents, enforce source-linked claims where evidence is needed, keep scoped memory boundaries, manage a group token budget, checkpoint workers, and return an audited result.";

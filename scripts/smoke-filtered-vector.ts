@@ -11,10 +11,10 @@ async function main() {
   const teamId = "smoke-team";
   const ownerAgentId = "agent-legal";
 
-  await collection.deleteMany({ demo_scope: "vector-smoke" });
+  await collection.deleteMany({ room_scope: "vector-smoke" });
   await collection.insertMany([
     {
-      demo_scope: "vector-smoke",
+      room_scope: "vector-smoke",
       content: "Private regulatory concern for LegalRisk only.",
       visibility: "private",
       owner_agent_id: ownerAgentId,
@@ -24,7 +24,7 @@ async function main() {
       created_at: new Date()
     },
     {
-      demo_scope: "vector-smoke",
+      room_scope: "vector-smoke",
       content: "Team-visible budget guardrail: cap worker token spend.",
       visibility: "team",
       owner_agent_id: "agent-finance",
@@ -34,7 +34,7 @@ async function main() {
       created_at: new Date()
     },
     {
-      demo_scope: "vector-smoke",
+      room_scope: "vector-smoke",
       content: "Global checklist for source-linked decision reviews.",
       visibility: "global",
       owner_agent_id: "agent-critic",
@@ -44,7 +44,7 @@ async function main() {
       created_at: new Date()
     },
     {
-      demo_scope: "vector-smoke",
+      room_scope: "vector-smoke",
       content: "Other team private note that should not leak.",
       visibility: "private",
       owner_agent_id: "agent-finance",
@@ -54,7 +54,7 @@ async function main() {
       created_at: new Date()
     },
     {
-      demo_scope: "vector-smoke",
+      room_scope: "vector-smoke",
       content: "Other team's billing note that should be excluded by team filter.",
       visibility: "team",
       owner_agent_id: "agent-finance",

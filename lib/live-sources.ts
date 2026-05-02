@@ -253,7 +253,7 @@ async function fetchNative(source: SourceRef, query: string, fetchedAt: string):
       signal: controller.signal,
       cache: "no-store",
       headers: {
-        "user-agent": "TeamManager-MCP-Hackathon-Demo/1.0"
+        "user-agent": "TeamManager-MCP/0.1"
       }
     });
     const contentType = response.headers.get("content-type") ?? "";
@@ -334,7 +334,7 @@ export function sourceDocument(source: FetchedSource, runId: string, taskId: str
   const evidenceText = source.evidence.map((item) => `${item.label}: ${item.snippet}`).join("\n");
   return {
     _id: `${runId}-${source.id}`,
-    demo_run_id: runId,
+    room_run_id: runId,
     task_id: taskId,
     source_id: source.id,
     title: source.title,

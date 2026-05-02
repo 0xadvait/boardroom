@@ -8,7 +8,7 @@ export type AgentStatus =
   | "complete"
   | "summarizer";
 
-export type DemoStatus =
+export type RoomStatus =
   | "idle"
   | "dispatched"
   | "running"
@@ -21,6 +21,10 @@ export type DemoStatus =
 export type Visibility = "private" | "team" | "global";
 
 export type EntryType = "discovery" | "decision" | "request" | "progress" | "warning";
+
+export type OptimizationPreference = "balanced" | "speed" | "cost" | "caution";
+
+export type SourceProviderPreference = "auto" | "brightdata" | "host_native" | "native";
 
 export interface ProvenSkill {
   successRate: number;
@@ -193,11 +197,30 @@ export interface BudgetState {
 export type PlanStatus = "proposed" | "approved" | "revisions_requested";
 
 export interface ModelProfile {
-  provider: "host" | "fireworks" | "claude" | "configurable";
+  provider: "host" | "fireworks" | "claude" | "openai" | "configurable";
   model: string;
   temperature: number;
   maxOutputTokens: number;
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  executionClass?: "logic" | "aesthetic" | "summarization" | "manager";
   reason: string;
+}
+
+export interface TeamManagerPreferences {
+  managerModel?: string;
+  logicModel?: string;
+  logicReasoningEffort?: ModelProfile["reasoningEffort"];
+  aestheticModel?: string;
+  summarizerModel?: string;
+  sourceProviderPreference: SourceProviderPreference;
+  optimizationPreference: OptimizationPreference;
+  defaultMemoryVisibility: Visibility;
+  budgetHardStopAction: BudgetState["actionAt100"];
+  defaultMaxAgents: number;
+  allowColdStartTemplates: boolean;
+  requireSourceLinkedClaims: boolean;
+  notes?: string;
+  updatedAt: string;
 }
 
 export interface CapabilityVector {
@@ -314,7 +337,7 @@ export interface GovernancePlan {
   userNotes?: string;
 }
 
-export interface DemoState {
+export interface RoomState {
   runId: string;
   taskId: string;
   groupId: string;
@@ -322,7 +345,7 @@ export interface DemoState {
   target: string;
   taskType: string;
   taskPrompt: string;
-  status: DemoStatus;
+  status: RoomStatus;
   step: number;
   createdAt: string;
   updatedAt: string;
@@ -339,11 +362,25 @@ export interface DemoState {
   mongoDocs: MongoDocEvent[];
   sources: SourceRef[];
   governancePlan?: GovernancePlan;
+  preferences: TeamManagerPreferences;
   finalDecision?: {
     verdict: string;
     confidence: number;
     rationale: string;
     votes: Record<string, "buy" | "hold" | "no_buy">;
+  };
+  finalResult?: {
+    resultType: "decision" | "deliverable" | "plan" | "report" | "checkpoint" | "other";
+    status: string;
+    summary: string;
+    confidence?: number;
+    deliverables: Array<{
+      title: string;
+      description: string;
+      artifactUri?: string;
+      sourceIds: string[];
+    }>;
+    nextSteps: string[];
   };
   mongo: {
     mode: "unknown" | "atlas" | "local";

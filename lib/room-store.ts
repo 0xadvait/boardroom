@@ -1,12 +1,12 @@
-import type { DemoState } from "./types";
-import { createInitialState } from "./demo-engine";
+import type { RoomState } from "./types";
+import { createInitialState } from "./room-engine";
 
 declare global {
   // eslint-disable-next-line no-var
-  var __team_manager_state: DemoState | undefined;
+  var __team_manager_state: RoomState | undefined;
 }
 
-export function getDemoState(): DemoState {
+export function getRoomState(): RoomState {
   if (!globalThis.__team_manager_state) {
     globalThis.__team_manager_state = createInitialState();
   }
@@ -14,12 +14,12 @@ export function getDemoState(): DemoState {
   return globalThis.__team_manager_state;
 }
 
-export function setDemoState(state: DemoState): DemoState {
+export function setRoomState(state: RoomState): RoomState {
   globalThis.__team_manager_state = state;
   return state;
 }
 
-export function resetDemoState(): DemoState {
+export function resetRoomState(): RoomState {
   globalThis.__team_manager_state = createInitialState();
   return globalThis.__team_manager_state;
 }

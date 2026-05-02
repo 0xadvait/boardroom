@@ -70,6 +70,12 @@ export function normalizeInverseDuration(avgDurationMs: number): number {
 
 export function classifyTaskType(taskPrompt: string): string {
   const text = taskPrompt.toLowerCase();
+  if (/\b(ui|ux|frontend|front-end|interface|visual|design|aesthetic|polish|copy|copywriting|landing page|website|web site|slide|slides|deck|readme|brand|presentation)\b/.test(text)) {
+    return "aesthetic_product_work";
+  }
+  if (/\b(trading agent|trading agents|trade bot|market data|backtest|backtesting|portfolio|execution strategy|alpha|risk limit|order book)\b/.test(text)) {
+    return "trading_agent_system";
+  }
   if (/\b(coinbase|exchange|token|crypto|listing|market maker|custody|wallet|blockchain)\b/.test(text)) {
     return "crypto_market_decision";
   }
@@ -93,14 +99,31 @@ export function classifyTaskType(taskPrompt: string): string {
 
 export function scoreAgents(taskPrompt: string, taskType: string, agents: AgentProfile[]): AgentProfile[] {
   const taskEmbedding = pseudoEmbedding(taskPrompt);
+  const aestheticSkills = [
+    "aesthetic_product_work",
+    "ui_polish",
+    "ux",
+    "frontend",
+    "visual_design",
+    "copywriting",
+    "text_polish",
+    "readme",
+    "presentation_narrative",
+    "presentation"
+  ];
   const withPromptScore = agents
     .map((agent) => {
       const semanticScore = cosineSimilarity(taskEmbedding, agent.descriptionEmbedding);
-      const taskTypeBoost = agent.skills.includes(taskType) ? 0.25 : 0;
+      const taskTypeBoost = agent.skills.includes(taskType) ? 0.35 : 0;
       const tokenBoost = agent.skills.some((skill) => taskPrompt.toLowerCase().includes(skill.replace(/_/g, " "))) ? 0.1 : 0;
+      const isAestheticAgent = agent.skills.some((skill) => aestheticSkills.includes(skill));
+      const taskTypePenalty =
+        (taskType === "aesthetic_product_work" && !isAestheticAgent) || (taskType !== "aesthetic_product_work" && isAestheticAgent)
+          ? 0.18
+          : 0;
       return {
         agent,
-        promptRelevance: Math.min(1, semanticScore + taskTypeBoost + tokenBoost)
+        promptRelevance: Math.max(0, Math.min(1, semanticScore + taskTypeBoost + tokenBoost - taskTypePenalty))
       };
     })
     .sort((left, right) => right.promptRelevance - left.promptRelevance)

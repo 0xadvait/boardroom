@@ -1,21 +1,32 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { spawnTeamRoom } from "../lib/demo-engine";
-import { getDemoState, resetDemoState, setDemoState } from "../lib/demo-store";
+import { spawnTeamRoom } from "../lib/room-engine";
+import { getRoomState, resetRoomState, setRoomState } from "../lib/room-store";
 import { approveGovernancePlan, buildGovernancePlan, governancePlanWrites } from "../lib/governance-plan";
-import { applyMongoWrites, closeMongoClient, resetMongoDemo } from "../lib/mongo";
+import {
+  applyMongoWrites,
+  closeMongoClient,
+  loadRegisteredAgentProfiles,
+  loadTeamManagerPreferences,
+  resetMongoRoom,
+  upsertRegisteredAgentProfiles,
+  upsertTeamManagerPreferences
+} from "../lib/mongo";
 import { fetchSources, sourceDocument } from "../lib/live-sources";
 import { brightDataAvailable, searchWithBrightData } from "../lib/brightdata-mcp";
+import { defaultPreferences, localConfigurationReport, mergePreferences } from "../lib/preferences";
 import { classifyTaskType, cosineSimilarity, pseudoEmbedding } from "../lib/scoring";
 import type {
   AuditEvent,
+  AgentProfile,
   BlackboardEntry,
   CheckpointRecord,
-  DemoState,
+  RoomState,
   MemoryCard,
   MongoWrite,
   SourceRef,
+  TeamManagerPreferences,
   Visibility
 } from "../lib/types";
 
@@ -26,7 +37,7 @@ function logEvent(event: string, fields: Record<string, unknown> = {}) {
   console.error(`[team-manager] ${event}${rendered ? ` ${rendered}` : ""}`);
 }
 
-function compactState(state: DemoState) {
+function compactState(state: RoomState) {
   return {
     runId: state.runId,
     taskId: state.taskId,
@@ -72,7 +83,17 @@ function compactState(state: DemoState) {
     blackboardEntries: state.blackboard.length,
     checkpoints: state.checkpoints.length,
     subscriptions: state.subscriptions.length,
-    decision: state.finalDecision
+    result: state.finalResult ?? state.finalDecision,
+    preferences: {
+      logicModel: state.preferences.logicModel,
+      logicReasoningEffort: state.preferences.logicReasoningEffort,
+      aestheticModel: state.preferences.aestheticModel,
+      sourceProviderPreference: state.preferences.sourceProviderPreference,
+      optimizationPreference: state.preferences.optimizationPreference,
+      defaultMaxAgents: state.preferences.defaultMaxAgents,
+      budgetHardStopAction: state.preferences.budgetHardStopAction,
+      allowColdStartTemplates: state.preferences.allowColdStartTemplates
+    }
   };
 }
 
@@ -87,9 +108,9 @@ function toolJson(value: unknown) {
   };
 }
 
-async function applyAndStore(state: DemoState, writes: MongoWrite[]) {
+async function applyAndStore(state: RoomState, writes: MongoWrite[]) {
   await applyMongoWrites(state, writes);
-  setDemoState(state);
+  setRoomState(state);
   return state;
 }
 
@@ -106,11 +127,11 @@ function stableId(input: string): string {
   return (hash >>> 0).toString(16);
 }
 
-function scopedId(state: DemoState, prefix: string, input = ""): string {
+function scopedId(state: RoomState, prefix: string, input = ""): string {
   return `${state.runId}-${prefix}-${stableId(`${Date.now()}-${input}`)}`;
 }
 
-function agentName(state: DemoState, agentId: string): string {
+function agentName(state: RoomState, agentId: string): string {
   return (
     state.selectedAgents.find((agent) => agent.agentId === agentId)?.name ??
     state.candidates.find((agent) => agent.agentId === agentId)?.name ??
@@ -118,7 +139,7 @@ function agentName(state: DemoState, agentId: string): string {
   );
 }
 
-function updateAgentStatus(state: DemoState, agentId: string, patch: { status?: DemoState["selectedAgents"][number]["status"]; currentStep?: string }) {
+function updateAgentStatus(state: RoomState, agentId: string, patch: { status?: RoomState["selectedAgents"][number]["status"]; currentStep?: string }) {
   state.selectedAgents = state.selectedAgents.map((agent) => (agent.agentId === agentId ? { ...agent, ...patch } : agent));
   state.candidates = state.candidates.map((agent) => (agent.agentId === agentId ? { ...agent, ...patch } : agent));
 }
@@ -135,7 +156,84 @@ function sourceRefsFromInput(sources: Array<{ url: string; title?: string; note?
   }));
 }
 
-async function writeAuditEvent(state: DemoState, event: Record<string, unknown>) {
+function agentProfilesFromInput(
+  agents: Array<{
+    agentId?: string;
+    name: string;
+    role?: string;
+    description: string;
+    skills?: string[];
+    capabilities?: string[];
+    provenSkills?: AgentProfile["provenSkills"];
+    avgTokens?: number;
+    successRate?: number;
+    avgDurationMs?: number;
+    tokenEfficiency?: number;
+    lastPerformedAt?: string;
+  }>
+): AgentProfile[] {
+  return agents.map((agent, index) => {
+    const agentId = agent.agentId ?? `registered-agent-${index + 1}-${stableId(`${agent.name}-${agent.description}`).slice(0, 8)}`;
+    const skills = agent.skills ?? [];
+    const capabilities = agent.capabilities ?? ["write_blackboard", "record_checkpoint", "query_context"];
+    const avgTokens = agent.avgTokens ?? 7000;
+    const successRate = agent.successRate ?? 0.62;
+    const avgDurationMs = agent.avgDurationMs ?? 45_000;
+    const tokenEfficiency = agent.tokenEfficiency ?? Math.min(1, Math.max(0.2, 6800 / Math.max(avgTokens, 1)));
+    const role = agent.role ?? "Registered specialist";
+    const descriptionEmbedding = pseudoEmbedding(`${agent.name} ${role} ${agent.description} ${skills.join(" ")}`);
+    const provenSkills = agent.provenSkills ?? {
+      general_decision: {
+        successRate,
+        avgDurationMs,
+        avgTokens,
+        runs: agent.successRate || agent.avgTokens || agent.avgDurationMs ? 1 : 0
+      }
+    };
+    if (!provenSkills.general_decision) {
+      provenSkills.general_decision = {
+        successRate,
+        avgDurationMs,
+        avgTokens,
+        runs: agent.successRate || agent.avgTokens || agent.avgDurationMs ? 1 : 0
+      };
+    }
+
+    return {
+      agentId,
+      name: agent.name,
+      role,
+      description: agent.description,
+      skills,
+      capabilities,
+      descriptionEmbedding,
+      provenSkills,
+      avgDurationMs,
+      tokenEfficiency,
+      lastPerformedAt: agent.lastPerformedAt ?? now(),
+      status: "candidate",
+      selected: false,
+      tokensUsed: 0,
+      currentStep: "Registered by MCP host"
+    };
+  });
+}
+
+function needsExternalSources(request: string, taskType: string): boolean {
+  const text = request.toLowerCase();
+  if (["crypto_market_decision", "procurement_decision", "market_strategy", "legal_risk", "financial_analysis"].includes(taskType)) {
+    return true;
+  }
+  return /\b(evaluate|should we|due diligence|research|sources?|evidence|public|competitor|vendor|regulatory|legal|listing|market)\b/.test(text);
+}
+
+async function hydratePreferences(state: RoomState): Promise<TeamManagerPreferences> {
+  const saved = await loadTeamManagerPreferences();
+  state.preferences = saved ? { ...defaultPreferences(), ...saved } : state.preferences ?? defaultPreferences();
+  return state.preferences;
+}
+
+async function writeAuditEvent(state: RoomState, event: Record<string, unknown>) {
   await applyAndStore(state, [
     {
       collection: "audit",
@@ -150,7 +248,7 @@ async function writeAuditEvent(state: DemoState, event: Record<string, unknown>)
   ]);
 }
 
-async function persistTaskState(state: DemoState) {
+async function persistTaskState(state: RoomState) {
   await applyAndStore(state, [
     {
       collection: "tasks",
@@ -185,6 +283,156 @@ const server = new McpServer({
   version: "0.1.0"
 });
 
+const preferencePatchSchema = z.object({
+  managerModel: z.string().optional(),
+  logicModel: z.string().optional(),
+  logicReasoningEffort: z.enum(["low", "medium", "high", "xhigh"]).optional(),
+  aestheticModel: z.string().optional(),
+  summarizerModel: z.string().optional(),
+  sourceProviderPreference: z.enum(["auto", "brightdata", "host_native", "native"]).optional(),
+  optimizationPreference: z.enum(["balanced", "speed", "cost", "caution"]).optional(),
+  defaultMemoryVisibility: z.enum(["private", "team", "global"]).optional(),
+  budgetHardStopAction: z.enum(["warn", "pause", "abort"]).optional(),
+  defaultMaxAgents: z.number().int().min(1).max(8).optional(),
+  allowColdStartTemplates: z.boolean().optional(),
+  requireSourceLinkedClaims: z.boolean().optional(),
+  notes: z.string().optional()
+});
+
+server.registerTool(
+  "team_manager_onboard",
+  {
+    title: "Onboard Team Manager",
+    description:
+      "Inspect local MCP configuration, report which providers are configured without exposing secrets, and optionally persist user preferences for future room planning.",
+    inputSchema: {
+      preferences: preferencePatchSchema.optional(),
+      save: z.boolean().default(true).describe("Persist preferences in MongoDB team_manager_settings when MongoDB is configured.")
+    }
+  },
+  async ({ preferences, save }) => {
+    const state = getRoomState();
+    await hydratePreferences(state);
+    const nextPreferences = preferences ? mergePreferences(state.preferences, preferences) : state.preferences;
+    state.preferences = nextPreferences;
+    setRoomState(state);
+
+    const saveResult = save ? await upsertTeamManagerPreferences(nextPreferences) : { connected: false };
+    await writeAuditEvent(state, {
+      event_type: "onboarding_completed",
+      preferences_saved: saveResult.connected,
+      preferences: nextPreferences
+    });
+
+    logEvent("onboarding.completed", {
+      saved: saveResult.connected,
+      optimization: nextPreferences.optimizationPreference,
+      sourceProvider: nextPreferences.sourceProviderPreference,
+      logicModel: nextPreferences.logicModel,
+      aestheticModel: nextPreferences.aestheticModel,
+      defaultMaxAgents: nextPreferences.defaultMaxAgents
+    });
+
+    return toolJson({
+      message: preferences
+        ? "Team Manager preferences updated. Future room plans will use these defaults."
+        : "Team Manager inspected local configuration. Pass preferences to this tool to persist operator defaults.",
+      saved: saveResult.connected,
+      saveError: "error" in saveResult ? saveResult.error : undefined,
+      report: localConfigurationReport(nextPreferences),
+      nextTools: ["team_manager_register_agents", "team_manager_plan_room"]
+    });
+  }
+);
+
+server.registerTool(
+  "team_manager_register_agents",
+  {
+    title: "Register Available Agents",
+    description:
+      "Register the actual subagents or worker profiles available in this MCP host. Registered profiles are persisted to MongoDB agent_profiles and used for routing before cold-start templates.",
+    inputSchema: {
+      agents: z
+        .array(
+          z.object({
+            agentId: z.string().optional(),
+            name: z.string(),
+            role: z.string().optional(),
+            description: z.string(),
+            skills: z.array(z.string()).default([]),
+            capabilities: z.array(z.string()).default(["write_blackboard", "record_checkpoint", "query_context"]),
+            provenSkills: z
+              .record(
+                z.object({
+                  successRate: z.number().min(0).max(1),
+                  avgDurationMs: z.number().int().positive(),
+                  avgTokens: z.number().int().positive(),
+                  runs: z.number().int().nonnegative()
+                })
+              )
+              .optional(),
+            avgTokens: z.number().int().positive().optional(),
+            successRate: z.number().min(0).max(1).optional(),
+            avgDurationMs: z.number().int().positive().optional(),
+            tokenEfficiency: z.number().min(0).max(1).optional(),
+            lastPerformedAt: z.string().optional()
+          })
+        )
+        .min(1),
+      replaceCurrentRoomCandidates: z.boolean().default(true),
+      replaceRegistry: z
+        .boolean()
+        .default(true)
+        .describe("Replace the persisted registered-agent pool with this exact host inventory. Set false to append/update incrementally.")
+    }
+  },
+  async ({ agents, replaceCurrentRoomCandidates, replaceRegistry }) => {
+    const state = getRoomState();
+    const profiles = agentProfilesFromInput(agents);
+    const result = await upsertRegisteredAgentProfiles(profiles, { replaceRegistry });
+
+    if (replaceCurrentRoomCandidates) {
+      state.candidates = profiles;
+      setRoomState(state);
+    }
+
+    await writeAuditEvent(state, {
+      event_type: "agent_profiles_registered",
+      source: result.connected ? "mongodb" : "local_runtime",
+      count: profiles.length,
+      replace_registry: replaceRegistry,
+      agents: profiles.map((profile) => ({
+        agent_id: profile.agentId,
+        name: profile.name,
+        skills: profile.skills,
+        capabilities: profile.capabilities
+      }))
+    });
+
+    logEvent("agents.registered", {
+      count: profiles.length,
+      persisted: result.connected,
+      replaceCurrentRoomCandidates
+    });
+
+    return toolJson({
+      message: result.connected
+        ? "Registered agent profiles persisted to MongoDB and will be used for capability routing."
+        : "Registered agent profiles loaded into this runtime. MongoDB was unavailable, so they were not persisted.",
+      persisted: result.connected,
+      replaceRegistry,
+      count: profiles.length,
+      agents: profiles.map((profile) => ({
+        agentId: profile.agentId,
+        name: profile.name,
+        role: profile.role,
+        skills: profile.skills,
+        capabilities: profile.capabilities
+      }))
+    });
+  }
+);
+
 server.registerTool(
   "team_manager_plan_room",
   {
@@ -207,21 +455,41 @@ server.registerTool(
     }
   },
   async ({ request, target, tokenBudget, reset }) => {
-    let state = reset ? resetDemoState() : getDemoState();
+    let state = reset ? resetRoomState() : getRoomState();
     if (reset) {
-      await resetMongoDemo(state);
+      await resetMongoRoom(state);
     }
 
     state.target = target;
     state.taskPrompt = request;
     state.taskType = classifyTaskType(request);
+    await hydratePreferences(state);
+    const registeredProfiles = await loadRegisteredAgentProfiles();
+    if (registeredProfiles.length > 0) {
+      state.candidates = registeredProfiles;
+      logEvent("agents.loaded_registered_profiles", {
+        count: registeredProfiles.length
+      });
+    } else if (state.preferences.allowColdStartTemplates) {
+      logEvent("agents.using_cold_start_templates", {
+        count: state.candidates.length
+      });
+    } else {
+      setRoomState(state);
+      return toolJson({
+        message: "No registered agent profiles found, and cold-start templates are disabled by onboarding preferences.",
+        nextTool: "team_manager_register_agents",
+        report: localConfigurationReport(state.preferences)
+      });
+    }
     const plan = buildGovernancePlan({
       runId: state.runId,
       request,
       target,
       taskType: state.taskType,
       candidates: state.candidates,
-      totalTokenBudget: tokenBudget
+      totalTokenBudget: tokenBudget,
+      preferences: state.preferences
     });
     state.budget.total = plan.totalTokenBudget;
     state.governancePlan = plan;
@@ -263,7 +531,7 @@ server.registerTool(
     }
   },
   async ({ agentId, reason, stepIndex, partialOutput, pendingToolCalls }) => {
-    const state = getDemoState();
+    const state = getRoomState();
     const latest = state.checkpoints.find((checkpoint) => checkpoint.agentId === agentId);
     const checkpoint: CheckpointRecord = {
       id: scopedId(state, "checkpoint-killed", `${agentId}-${reason}`),
@@ -358,7 +626,7 @@ server.registerTool(
     }
   },
   async ({ agentId }) => {
-    const state = getDemoState();
+    const state = getRoomState();
     const latest = state.checkpoints.find((checkpoint) => checkpoint.agentId === agentId);
     if (!latest) {
       return toolJson({
@@ -461,7 +729,7 @@ server.registerTool(
     }
   },
   async ({ approved, userNotes, totalTokenBudget, agentBudgetOverrides }) => {
-    const state = getDemoState();
+    const state = getRoomState();
     if (!state.governancePlan) {
       return toolJson({
         message: "No proposed plan exists yet. Call team_manager_plan_room first.",
@@ -510,7 +778,7 @@ server.registerTool(
     }
   },
   async ({ query, engine, geoLocation, maxResults, register }) => {
-    const state = getDemoState();
+    const state = getRoomState();
     const searchQuery = query ?? state.taskPrompt;
 
     if (!brightDataAvailable()) {
@@ -547,7 +815,7 @@ server.registerTool(
         source_count: state.sources.length,
         sources: state.sources.map((source) => ({ id: source.id, title: source.title, url: source.url }))
       });
-      setDemoState(state);
+      setRoomState(state);
     }
 
     logEvent("sources.searched.brightdata", {
@@ -592,14 +860,14 @@ server.registerTool(
     }
   },
   async ({ sources }) => {
-    const state = getDemoState();
+    const state = getRoomState();
     state.sources = sourceRefsFromInput(sources);
     await writeAuditEvent(state, {
       event_type: "sources_registered",
       source_count: state.sources.length,
       sources: state.sources.map((source) => ({ id: source.id, title: source.title, url: source.url }))
     });
-    setDemoState(state);
+    setRoomState(state);
     logEvent("sources.registered", {
       count: state.sources.length,
       urls: state.sources.map((source) => source.url)
@@ -624,7 +892,7 @@ server.registerTool(
     }
   },
   async ({ extractionProvider, fallbackToNative }) => {
-    const state = getDemoState();
+    const state = getRoomState();
     if (state.sources.length === 0) {
       return toolJson({
         message: "No sources are registered. Call team_manager_set_sources first.",
@@ -696,7 +964,7 @@ server.registerTool(
     }
   },
   async ({ agentId, entryType, visibility, content, sourceIds, reuseCount, criticRatified }) => {
-    const state = getDemoState();
+    const state = getRoomState();
     const createdAt = now();
     const promoted = visibility !== "private" || reuseCount >= 3 || criticRatified;
     const effectiveVisibility = visibility === "private" && promoted ? "team" : visibility;
@@ -782,7 +1050,7 @@ server.registerTool(
     }
   },
   async ({ query, agentId, teamId, topK }) => {
-    const state = getDemoState();
+    const state = getRoomState();
     const vector = pseudoEmbedding(query);
     const currentTeamId = teamId ?? state.teamId;
     const visibleMemory = state.memoryCards.filter((card) => {
@@ -849,7 +1117,7 @@ server.registerTool(
     }
   },
   async ({ ownerAgentId, visibility, content, reuseCount, criticRatified, sourceEntryId }) => {
-    const state = getDemoState();
+    const state = getRoomState();
     const promoted = visibility !== "private" || reuseCount >= 3 || criticRatified;
     const effectiveVisibility = visibility === "private" && promoted ? "team" : visibility;
     const card: MemoryCard = {
@@ -908,7 +1176,7 @@ server.registerTool(
     }
   },
   async ({ agentId, stepIndex, partialOutput, pendingToolCalls, tokensInput, tokensOutput, outcome }) => {
-    const state = getDemoState();
+    const state = getRoomState();
     const startedAt = now();
     const record: CheckpointRecord = {
       id: scopedId(state, "checkpoint", `${agentId}-${stepIndex}-${partialOutput}`),
@@ -966,7 +1234,7 @@ server.registerTool(
     }
   },
   async ({ tokensConsumed, tokenBudget }) => {
-    const state = getDemoState();
+    const state = getRoomState();
     if (tokenBudget) {
       state.budget.total = tokenBudget;
     }
@@ -1007,10 +1275,122 @@ server.registerTool(
 );
 
 server.registerTool(
+  "team_manager_emit_result",
+  {
+    title: "Emit Audited Result",
+    description:
+      "Store the final result for any governed room: decision, deliverable, implementation plan, report, checkpoint, or other task outcome, with claim-to-evidence audit records.",
+    inputSchema: {
+      resultType: z.enum(["decision", "deliverable", "plan", "report", "checkpoint", "other"]).default("deliverable"),
+      status: z.string().default("complete"),
+      summary: z.string(),
+      confidence: z.number().min(0).max(1).optional(),
+      deliverables: z
+        .array(
+          z.object({
+            title: z.string(),
+            description: z.string(),
+            artifactUri: z.string().optional(),
+            sourceIds: z.array(z.string()).default([])
+          })
+        )
+        .default([]),
+      nextSteps: z.array(z.string()).default([]),
+      claims: z
+        .array(
+          z.object({
+            agentId: z.string(),
+            claim: z.string(),
+            blackboardEntryId: z.string(),
+            sourceIds: z.array(z.string()).default([]),
+            confidence: z.number().min(0).max(1).default(0.7)
+          })
+        )
+        .default([])
+    }
+  },
+  async ({ resultType, status, summary, confidence, deliverables, nextSteps, claims }) => {
+    const state = getRoomState();
+    state.status = "complete";
+    state.finalResult = {
+      resultType,
+      status,
+      summary,
+      confidence,
+      deliverables,
+      nextSteps
+    };
+    const createdAt = now();
+    const auditEvents: AuditEvent[] = claims.map((claim) => ({
+      id: scopedId(state, "audit-claim", `${claim.agentId}-${claim.claim}`),
+      taskId: state.taskId,
+      claim: claim.claim,
+      agentId: claim.agentId,
+      agentName: agentName(state, claim.agentId),
+      blackboardEntryId: claim.blackboardEntryId,
+      sourceIds: claim.sourceIds,
+      confidence: claim.confidence,
+      createdAt
+    }));
+    state.audit = [...auditEvents, ...state.audit].slice(0, 100);
+
+    await applyAndStore(state, [
+      {
+        collection: "tasks",
+        operation: "updateOne",
+        filter: { _id: state.taskId },
+        update: {
+          $set: {
+            status: state.status,
+            final_result: state.finalResult,
+            updated_at: new Date()
+          }
+        }
+      },
+      {
+        collection: "audit",
+        operation: "insertMany",
+        documents: [
+          {
+            _id: scopedId(state, "audit-result"),
+            task_id: state.taskId,
+            event_type: "result",
+            result_type: resultType,
+            status,
+            summary,
+            confidence,
+            deliverables,
+            next_steps: nextSteps,
+            created_at: new Date(createdAt)
+          },
+          ...auditEvents.map((event) => ({
+            _id: event.id,
+            task_id: event.taskId,
+            claim: event.claim,
+            agent_id: event.agentId,
+            agent_name: event.agentName,
+            blackboard_entry_id: event.blackboardEntryId,
+            source_ids: event.sourceIds,
+            confidence: event.confidence,
+            created_at: new Date(event.createdAt)
+          }))
+        ]
+      }
+    ]);
+
+    return toolJson({
+      message: "Result and audit trail stored.",
+      result: state.finalResult,
+      audit: auditEvents
+    });
+  }
+);
+
+server.registerTool(
   "team_manager_emit_decision",
   {
     title: "Emit Audited Decision",
-    description: "Store the final decision and claim-to-evidence audit trail in MongoDB.",
+    description: "Compatibility wrapper for decision-shaped rooms. For generic tasks, prefer team_manager_emit_result.",
     inputSchema: {
       verdict: z.string(),
       confidence: z.number().min(0).max(1),
@@ -1030,9 +1410,17 @@ server.registerTool(
     }
   },
   async ({ verdict, confidence, rationale, votes, claims }) => {
-    const state = getDemoState();
+    const state = getRoomState();
     state.status = "complete";
     state.finalDecision = { verdict, confidence, rationale, votes };
+    state.finalResult = {
+      resultType: "decision",
+      status: "complete",
+      summary: `${verdict}: ${rationale}`,
+      confidence,
+      deliverables: [],
+      nextSteps: []
+    };
     const createdAt = now();
     const auditEvents: AuditEvent[] = claims.map((claim) => ({
       id: scopedId(state, "audit-claim", `${claim.agentId}-${claim.claim}`),
@@ -1055,6 +1443,7 @@ server.registerTool(
           $set: {
             status: state.status,
             final_decision: state.finalDecision,
+            final_result: state.finalResult,
             updated_at: new Date()
           }
         }
@@ -1101,37 +1490,67 @@ server.registerTool(
   {
     title: "Start Governed Agent Room",
     description:
-      "Start the approved Team Manager room, dispatch the specialist pool, fetch live evidence, and persist room state to MongoDB Atlas.",
+      "Start the approved Team Manager room, dispatch the specialist pool, and persist room state to MongoDB Atlas. Sources can be registered before or after start.",
     inputSchema: {
       request: z
         .string()
         .default("I want to evaluate an important decision in the most efficient way.")
         .describe("The user's high-level work request."),
       target: z.string().default("custom").describe("Target entity, topic, decision, or workstream."),
-      tokenBudget: z.number().int().positive().default(50_000).describe("Group token budget for the governed run."),
+      tokenBudget: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Optional manual group token budget override. Omit this so Team Manager estimates budget from the task."),
       reset: z.boolean().default(false).describe("Reset the current room before starting."),
       autoApprovePlan: z.boolean().default(false).describe("Auto-approve a proposed plan if none exists.")
     }
   },
   async ({ request, target, tokenBudget, reset, autoApprovePlan }) => {
-    let state = reset ? resetDemoState() : getDemoState();
+    let state = reset ? resetRoomState() : getRoomState();
     if (reset) {
-      await resetMongoDemo(state);
+      await resetMongoRoom(state);
+    }
+    if (!reset && state.status !== "idle" && (state.taskPrompt !== request || state.target !== target)) {
+      state = resetRoomState();
     }
 
     state.target = target;
     state.taskPrompt = request;
     state.taskType = classifyTaskType(request);
-    state.budget.total = tokenBudget;
-    if (!state.governancePlan || state.governancePlan.status !== "approved") {
+    await hydratePreferences(state);
+    const registeredProfiles = await loadRegisteredAgentProfiles();
+    if (registeredProfiles.length > 0) {
+      state.candidates = registeredProfiles;
+      logEvent("agents.loaded_registered_profiles", {
+        count: registeredProfiles.length
+      });
+    } else if (!state.preferences.allowColdStartTemplates) {
+      setRoomState(state);
+      return toolJson({
+        message: "No registered agent profiles found, and cold-start templates are disabled by onboarding preferences.",
+        nextTool: "team_manager_register_agents",
+        report: localConfigurationReport(state.preferences)
+      });
+    }
+    const approvedPlanMatchesRequest =
+      state.governancePlan?.status === "approved" &&
+      state.governancePlan.request === request &&
+      state.governancePlan.target === target &&
+      state.governancePlan.taskType === state.taskType;
+
+    if (!approvedPlanMatchesRequest) {
       const plan = buildGovernancePlan({
         runId: state.runId,
         request,
         target,
         taskType: state.taskType,
         candidates: state.candidates,
-        totalTokenBudget: tokenBudget
+        totalTokenBudget: tokenBudget,
+        preferences: state.preferences
       });
+      state.budget.total = plan.totalTokenBudget;
       state.governancePlan = plan;
       await applyAndStore(state, governancePlanWrites(plan));
 
@@ -1156,13 +1575,18 @@ server.registerTool(
       await applyAndStore(state, approval.writes);
     }
 
-    state.budget.total = state.governancePlan.totalTokenBudget;
+    const approvedPlan = state.governancePlan;
+    if (!approvedPlan) {
+      throw new Error("Approved governance plan missing after start.");
+    }
+
+    state.budget.total = approvedPlan.totalTokenBudget;
     logEvent("room.configure", {
       target,
       taskType: state.taskType,
       tokenBudget: state.budget.total,
-      governancePlanId: state.governancePlan.id,
-      memoryVisibility: state.governancePlan.memoryPolicy.visibility,
+      governancePlanId: approvedPlan.id,
+      memoryVisibility: approvedPlan.memoryPolicy.visibility,
       budgetThresholds: ["70% warning", "90% summarizer", "100% abort"]
     });
     logEvent("dispatch.formula", {
@@ -1174,23 +1598,6 @@ server.registerTool(
     });
 
     const spawnResult = spawnTeamRoom(state);
-    const hasUserSources = spawnResult.state.sources.some((source) => source.id.startsWith("src-user"));
-
-    if (!hasUserSources) {
-      spawnResult.state.sources = [];
-      state = await applyAndStore(spawnResult.state, spawnResult.writes);
-      logEvent("room.started.awaiting_sources", {
-        taskId: state.taskId,
-        reason: "no user-provided sources"
-      });
-      return toolJson({
-        message:
-          "Team Manager started the approved room and dispatched agents, but no sources are registered. Call team_manager_set_sources, then team_manager_ingest_sources.",
-        nextTools: ["team_manager_set_sources", "team_manager_ingest_sources"],
-        state: compactState(state)
-      });
-    }
-
     state = await applyAndStore(spawnResult.state, spawnResult.writes);
     logEvent("dispatch.selected", {
       agents: state.selectedAgents
@@ -1199,18 +1606,23 @@ server.registerTool(
           name: agent.name,
           rank: agent.score?.rank,
           score: agent.score?.matchScore,
-            tokenEfficiency: agent.score?.tokenEfficiency
-          }))
+          tokenEfficiency: agent.score?.tokenEfficiency
+        }))
     });
 
-    const approvedPlan = state.governancePlan;
-    if (!approvedPlan) {
-      throw new Error("Approved governance plan missing after start.");
-    }
-
+    const hasRegisteredSources = state.sources.length > 0;
+    const sourceRequired = needsExternalSources(request, state.taskType);
     return toolJson({
-      message: "Team Manager started the approved room and dispatched agents. Call team_manager_ingest_sources to fetch the registered sources.",
-      nextTool: "team_manager_ingest_sources",
+      message: hasRegisteredSources
+        ? "Team Manager started the approved room and dispatched agents. Registered sources are ready for ingestion."
+        : sourceRequired
+          ? "Team Manager started the approved room and dispatched agents. This task likely needs external evidence, so register sources before final claims."
+          : "Team Manager started the approved room and dispatched agents. No sources are registered yet; workers can proceed from user context and artifacts, then add sources if needed.",
+      nextTools: hasRegisteredSources
+        ? ["team_manager_ingest_sources", "team_manager_query_context", "team_manager_record_checkpoint"]
+        : sourceRequired
+          ? ["team_manager_find_sources", "team_manager_set_sources", "team_manager_ingest_sources"]
+          : ["team_manager_query_context", "team_manager_post_blackboard", "team_manager_record_checkpoint"],
       governance: {
         plan: approvedPlan,
         tokenBudget: state.budget.total,
@@ -1232,7 +1644,9 @@ server.registerTool(
     }
   },
   async ({ includeFullAudit }) => {
-    const state = getDemoState();
+    const state = getRoomState();
+    await hydratePreferences(state);
+    setRoomState(state);
     return toolJson({
       state: compactState(state),
       blackboard: state.blackboard,
@@ -1250,9 +1664,10 @@ server.registerTool(
     inputSchema: {}
   },
   async () => {
-    const state = resetDemoState();
-    await resetMongoDemo(state);
-    setDemoState(state);
+    const state = resetRoomState();
+    await resetMongoRoom(state);
+    await hydratePreferences(state);
+    setRoomState(state);
     logEvent("room.reset", {
       mongo: state.mongo.mode,
       db: state.mongo.dbName
