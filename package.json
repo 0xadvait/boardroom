@@ -1,0 +1,30 @@
+{
+  "name": "boardroom",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MongoDB-native governance layer demo for multi-agent vendor evaluation.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "atlas:init": "tsx scripts/init-atlas.ts",
+    "atlas:smoke": "tsx scripts/smoke-filtered-vector.ts",
+    "seed": "tsx scripts/seed-demo.ts"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "mongodb": "^6.12.0",
+    "next": "^15.1.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
