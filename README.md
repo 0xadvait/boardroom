@@ -1,51 +1,217 @@
-# Team Manager MCP
+<p align="center">
+  <h1 align="center">Team Manager MCP</h1>
+  <p align="center"><strong>A MongoDB-native control plane for arbitrary multi-agent work.</strong></p>
+  <p align="center">
+    <img alt="MCP server" src="https://img.shields.io/badge/MCP-server-111827">
+    <img alt="MongoDB Atlas" src="https://img.shields.io/badge/MongoDB-Atlas-13AA52">
+    <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178C6">
+    <img alt="MCP native" src="https://img.shields.io/badge/UI-MCP%20native-7C3AED">
+  </p>
+</p>
 
-MongoDB-native team manager for multi-agent collaboration.
+---
 
-**Tagline:** Tell it the job. It proposes the team, budgets, memory rules, and models. Approve the plan, then kill any agent and watch it resume from MongoDB.
+**Tell it the job. It proposes the team, budgets, models, memory rules, source policy, and checkpoints. Approve the plan, then let your MCP host run specialists with MongoDB as the durable room state.**
 
-Team Manager is an MCP server for governing arbitrary multi-agent work. An MCP-capable host gives it any complex request, the manager classifies the task, proposes a specialist room, asks the human for approval or edits, and MongoDB Atlas stores the skills, assignments, shared context, memory boundaries, token budget, checkpoints, source evidence, and audit trail.
+Team Manager is an MCP server that turns a vague request into a governed specialist room. It is not a dashboard, not a vertical chatbot, and not a scripted demo. The MCP host runs the actual worker agents; Team Manager plans, coordinates, budgets, persists, and audits the collaboration.
 
-## Primary Theme
+```text
+User request
+  -> Team Manager classifies the task
+  -> proposes specialists, budgets, models, memory boundaries
+  -> human approves or edits
+  -> MCP host runs workers
+  -> MongoDB stores shared context, checkpoints, budget, and audit
+```
 
-Team Manager is built for **Multi-Agent Collaboration**:
+## Contents
 
-- **Agents convey skills:** `agent_profiles` stores declared skills plus proven performance history.
-- **Agents identify peers:** capability scoring ranks 12 candidates and proposes the best 5-agent room.
-- **Agents share context:** `blackboard_entries` is the shared room context, with vector relevance and change-stream style subscription events.
-- **Agents stay inside token limits:** `tasks` and `groups` hold the group budget, warning threshold, summarizer threshold, and hard-stop action.
-- **Agents retain scoped memory:** `memory_cards` stores private, team, and global memory with filtered retrieval.
-- **Agents survive interruptions:** `agent_performance_records` stores checkpoints and resume tokens.
+- [Why It Exists](#why-it-exists)
+- [Features](#features)
+- [Hackathon Fit](#hackathon-fit)
+- [Demo Prompt](#demo-prompt)
+- [Architecture](#architecture)
+- [MCP Tools](#mcp-tools)
+- [MongoDB Collections](#mongodb-collections)
+- [Quick Start](#quick-start)
+- [What Is Real](#what-is-real)
 
-It also touches prolonged coordination through checkpoint/resume and adaptive retrieval through source, memory, and blackboard relevance, but the submission story should lead with multi-agent collaboration.
+## Why It Exists
 
-## MCP Flow
+Multi-agent workflows usually fail in the boring places:
 
-The intended MCP sequence is collaborative:
+- Agents are selected from prompts, not observed performance.
+- Shared context becomes either isolated silos or noisy group chat.
+- Memory has no real boundary between private, team, and global knowledge.
+- Token use grows without a group-level budget or recovery plan.
+- A killed worker loses state unless the orchestration layer writes checkpoints.
 
-1. `team_manager_plan_room`: proposes the measurement formula, routing cascade, specialist roster, versioned capability vectors, token allocation, model profiles, memory visibility, priorities, and user questions.
-2. `team_manager_approve_plan`: records the human's approval or revision request in MongoDB.
-3. `team_manager_set_sources`: registers the URLs the host agent or user wants the room to use.
-4. `team_manager_start_room`: dispatches the approved room and asks for sources if none have been registered.
-5. `team_manager_ingest_sources`: fetches registered URLs, extracts generic evidence snippets from the task query, and writes `source_documents`.
-6. `team_manager_post_blackboard`: lets host-run specialist agents publish source-linked findings to shared context.
-7. `team_manager_query_context`: retrieves relevant blackboard, memory, and source evidence with visibility filtering.
-8. `team_manager_write_memory`: stores private, team, or global memory cards.
-9. `team_manager_record_checkpoint`: persists agent checkpoints.
-10. `team_manager_kill_agent`: records that the MCP host killed or lost a worker and stores the checkpoint state.
-11. `team_manager_resume_agent`: returns checkpoint context for the host to restart that worker.
-12. `team_manager_update_budget`: updates group token usage and returns threshold actions.
-13. `team_manager_emit_decision`: stores the final decision and claim-to-evidence audit trail.
+Team Manager gives the host agent a MongoDB-backed control plane for those problems.
 
-## Design Anchors
+## Features
 
-These papers influenced the implementation, but the demo should stay product-led rather than citation-led:
+- **Task-aware team formation:** classifies arbitrary requests and selects specialists from a capability pool.
+- **Capability vectors:** every selected agent exposes declared skills, capabilities, observed performance, token efficiency, and constraints.
+- **Human-approved room plans:** the manager asks concrete approval questions before dispatching work.
+- **MongoDB blackboard:** specialists publish findings, requests, progress, warnings, and decisions into a shared collection.
+- **Scoped memory:** memory is `private`, `team`, or `global`; private cards only return to their owner agent.
+- **Source-linked evidence:** the host registers arbitrary URLs, Team Manager extracts query-relevant evidence, and final claims cite source ids.
+- **Group token governance:** one room budget with 70% warning, 90% summarizer action, and 100% configured hard action.
+- **Checkpoint recovery:** host-side worker interruption is recorded in MongoDB and resumed from checkpoint context.
+- **Audit trail:** final decisions link claim -> blackboard entry -> source document.
 
-- [Federation of Agents](https://arxiv.org/abs/2509.20175): selected agents expose a versioned capability vector with declared skills, proven performance, cost, and constraints.
-- [MasRouter](https://arxiv.org/abs/2502.11133): `team_manager_plan_room` returns a cascaded routing plan: collaboration mode, candidate retrieval, capability scoring, role allocation, model assignment, budget assignment, and memory boundary.
-- [LLM-Based Multi-Agent Blackboard System](https://arxiv.org/abs/2510.01285): shared work happens through append-only `blackboard_entries` plus explicit context queries.
-- [Collaborative Memory](https://arxiv.org/abs/2505.18279): `team_manager_query_context` enforces private/team/global memory visibility before returning context.
-- [MCP for Multi-Agent Systems](https://arxiv.org/abs/2504.21030): the product is an MCP control plane, not a dashboard.
+## Hackathon Fit
+
+Built for the **MongoDB Agentic Evolution Hackathon** theme **Multi-Agent Collaboration**.
+
+| Theme question | Team Manager answer |
+|---|---|
+| How do agents convey their skills? | `agent_profiles` stores declared skills, capability vectors, embeddings, and observed performance. |
+| How does the system identify suitable peers? | `team_manager_plan_room` classifies the request, scores candidates, and proposes a specialist room. |
+| How do agents share context within token limits? | `blackboard_entries`, `memory_cards`, `source_documents`, and top-k context retrieval keep shared context explicit and bounded. |
+| How is collaboration organized and overseen? | `governance_plans`, `tasks`, `groups`, budget thresholds, checkpoints, and `audit` make MongoDB the room state. |
+
+It also touches **Prolonged Coordination** through checkpoint/resume and **Adaptive Retrieval** through source, memory, and blackboard relevance.
+
+## What It Does
+
+Given any complex request, for example:
+
+```text
+I want to evaluate whether my company should get listed on Coinbase as an exchange or not.
+```
+
+Team Manager:
+
+1. Classifies the task, for example `crypto_market_decision`, `technical_decision`, `market_strategy`, `legal_risk`, `financial_analysis`, or `general_decision`.
+2. Scores a pool of specialist agents using capability relevance, history, recency, latency, and token efficiency.
+3. Proposes a human-approved room plan: specialists, models, token caps, memory visibility, routing stages, and open questions.
+4. Registers arbitrary sources selected by the host or user.
+5. Stores source evidence, blackboard entries, memory cards, checkpoints, budget state, and decisions in MongoDB.
+6. Returns filtered context to each specialist according to visibility boundaries.
+7. Records worker interruption and returns checkpoint context for the host to resume that worker.
+8. Emits a final audited decision where claims link back to blackboard entries and source evidence.
+
+## Demo Prompt
+
+Use any non-trivial question. The cleanest demo prompt so far:
+
+```text
+I want to evaluate whether my company should get listed on Coinbase as an exchange or not. Use Team Manager to classify the task, propose the agent room, ask me before starting, use sources I provide, keep private memory private, manage the group token budget, checkpoint each specialist, and return an audited recommendation.
+```
+
+What judges should see:
+
+- The manager asks approval questions before starting.
+- The plan shows task type, routing cascade, specialists, models, and token caps.
+- The host registers live sources.
+- MongoDB receives source documents, blackboard entries, memory cards, checkpoints, budget updates, and audit records.
+- Killing or losing a worker becomes a checkpoint/resume event rather than lost state.
+- The final decision is traceable from claim to blackboard entry to source.
+
+## Current Specialist Pool
+
+The room is selected dynamically from a general-purpose pool:
+
+| Agent | Specialty |
+|---|---|
+| `EvidenceScout` | Primary research, source triage, fact extraction |
+| `TechnicalFit` | Architecture, APIs, integration, implementation risk |
+| `MarketMapper` | Market structure, customers, competitors, ecosystem |
+| `LegalRisk` | Legal, compliance, policy, contract, approval gates |
+| `FinanceModeler` | Cost, ROI, revenue, budget, commercial tradeoffs |
+| `CryptoMarket` | Exchange listings, liquidity, custody, token and market structure |
+| `OpsPlanner` | Execution plan, dependencies, owners, rollout risk |
+| `RiskRegister` | Cross-functional risk aggregation and mitigations |
+| `ImplementationPM` | Stakeholders, sequencing, migration, change management |
+| `UserImpact` | User, customer, and workflow impact |
+| `StrategyLead` | Options, tradeoffs, second-order effects, priorities |
+| `SynthesisCritic` | Contradictions, evidence quality, final recommendation |
+
+The selected room depends on the prompt. A Coinbase listing prompt should pull in `CryptoMarket`; a billing architecture prompt should pull in `TechnicalFit`.
+
+## Architecture
+
+```text
+MCP host
+  |
+  | calls Team Manager tools
+  v
+Team Manager MCP
+  |
+  | plans, scores, budgets, filters, checkpoints, audits
+  v
+MongoDB Atlas
+  |-- agent_profiles
+  |-- governance_plans
+  |-- tasks / groups
+  |-- blackboard_entries
+  |-- memory_cards
+  |-- source_documents
+  |-- agent_performance_records
+  `-- audit
+```
+
+MongoDB is not just storage here. It is the collaboration substrate: routing data, room state, shared context, scoped memory, token budget, checkpoint recovery, and decision provenance all live in Atlas.
+
+## MCP Tools
+
+| Tool | Purpose |
+|---|---|
+| `team_manager_plan_room` | Propose task type, routing cascade, specialists, capability vectors, token caps, model profiles, memory policy, and approval questions. |
+| `team_manager_approve_plan` | Record human approval or revision request. |
+| `team_manager_set_sources` | Register arbitrary URLs chosen by the host or user. |
+| `team_manager_start_room` | Dispatch the approved room. If no sources exist, asks for sources instead of fabricating evidence. |
+| `team_manager_ingest_sources` | Fetch registered URLs, extract generic query-relevant evidence snippets, and write `source_documents`. |
+| `team_manager_query_context` | Retrieve relevant blackboard, source, and memory context with visibility filters. |
+| `team_manager_post_blackboard` | Append findings, decisions, requests, progress, or warnings to shared room context. |
+| `team_manager_write_memory` | Store private, team, or global memory cards. |
+| `team_manager_record_checkpoint` | Persist agent progress and pending tool calls. |
+| `team_manager_update_budget` | Update group token usage and return threshold actions. |
+| `team_manager_kill_agent` | Record host-side worker interruption and preserve checkpoint state. |
+| `team_manager_resume_agent` | Return checkpoint context for the restarted worker. |
+| `team_manager_emit_decision` | Store final verdict, votes, rationale, and claim-to-evidence trail. |
+| `team_manager_state` | Read current room state, blackboard entries, checkpoints, and audit records. |
+| `team_manager_reset` | Reset local room state and clear scoped MongoDB documents. |
+
+Typical sequence:
+
+```text
+plan_room -> approve_plan -> set_sources -> start_room -> ingest_sources
+  -> specialists query/post/write/checkpoint/update_budget
+  -> emit_decision -> state
+```
+
+## Governance Layers
+
+| Layer | Implementation |
+|---|---|
+| Capability profiling | Declared skills plus proven task history, token efficiency, latency, and recency. |
+| Shared blackboard | Append-only `blackboard_entries` with source links, visibility, embeddings, reactions, and promotion state. |
+| Layered memory | `memory_cards` use `private`, `team`, and `global` visibility. Private memory requires owner-agent match. |
+| Token budget governance | Group budget in `tasks` and `groups`; warnings at 70%, summarizer action at 90%, configured action at 100%. |
+| Checkpoint/resume | `agent_performance_records` stores step index, partial output, pending tool calls, and resume token. |
+| Auditability | Final claims in `audit` link back to blackboard entries and source ids. |
+
+## MongoDB Collections
+
+| Collection | Purpose |
+|---|---|
+| `agent_profiles` | Candidate agent cards, skills, embeddings, capabilities, and performance stats. |
+| `governance_plans` | Proposed and approved room plans, questions, routing stages, model profiles, budgets, and memory policy. |
+| `tasks` | Active work item, assigned agents, task type, budget, checkpoint, and status. |
+| `groups` | Room membership and group-level token budget. |
+| `blackboard_entries` | Shared findings, decisions, requests, progress, and warnings. |
+| `memory_cards` | Private, team, and global memory with filtered retrieval. |
+| `source_documents` | User-provided public sources plus extracted evidence snippets. |
+| `agent_performance_records` | Time-series execution records and recovery checkpoints. |
+| `audit` | Append-only timeline and final claim-to-evidence trail. |
+
+Atlas Vector Search indexes:
+
+- `agent_profiles.agent_description_vector_index`
+- `blackboard_entries.blackboard_content_vector_index`
+- `memory_cards.memory_layered_vector_index`
 
 ## Quick Start
 
@@ -54,13 +220,13 @@ npm install
 npm run mcp
 ```
 
-For MCP client configs, call the server directly so stdout stays protocol-clean:
+For MCP client configs, call the server directly so stdout stays JSON-RPC clean:
 
 ```bash
 ./node_modules/.bin/tsx scripts/mcp-server.ts
 ```
 
-Example MCP server entry:
+Example MCP config:
 
 ```json
 {
@@ -79,13 +245,13 @@ Example MCP server entry:
 
 Full demo operator notes are in [docs/mcp-demo.md](docs/mcp-demo.md).
 
-## Atlas Sandbox
+## Atlas Setup
 
-Create `.env.local` locally from `.env.example` and set:
+Set the Atlas Sandbox connection string:
 
 ```bash
-MONGODB_URI="mongodb+srv://advait:<URL_ENCODED_PASSWORD>@cluster0.1hulng.mongodb.net/?appName=Cluster0"
-TEAM_MANAGER_DB=team_manager
+export MONGODB_URI="mongodb+srv://advait:<URL_ENCODED_PASSWORD>@cluster0.1hulng.mongodb.net/?appName=Cluster0"
+export TEAM_MANAGER_DB=team_manager
 ```
 
 Initialize collections and indexes:
@@ -94,38 +260,48 @@ Initialize collections and indexes:
 npm run atlas:init
 ```
 
-Validate the filtered vector index on `memory_cards`:
+Validate filtered vector retrieval on `memory_cards`:
 
 ```bash
 npm run atlas:smoke
 ```
 
-## MongoDB Collections
+Validate TypeScript:
 
-- `governance_plans`: proposed and approved room plans, questions, model profiles, token allocations, and memory policy.
-- `agent_profiles`: candidate agent cards, skills, embeddings, and learned performance stats.
-- `agent_performance_records`: time-series execution records and checkpoints.
-- `tasks`: active work item, group assignment, token budget, and current status.
-- `groups`: room membership and group-level token consumption.
-- `blackboard_entries`: shared findings, decisions, requests, progress, and warnings.
-- `memory_cards`: private, team, and global scoped memory cards.
-- `source_documents`: live public source pages and extracted evidence snippets.
-- `audit`: append-only event and claim trail.
+```bash
+npm run build
+```
 
-Atlas Vector Search indexes:
+## Design Anchors
 
-- `agent_profiles.agent_description_vector_index`
-- `blackboard_entries.blackboard_content_vector_index`
-- `memory_cards.memory_layered_vector_index`
+The README is product-led, but the implementation is grounded in current multi-agent systems work:
 
-## Submission Summary
+- [Federation of Agents](https://arxiv.org/abs/2509.20175): versioned capability vectors and semantic routing.
+- [MasRouter](https://arxiv.org/abs/2502.11133): cascaded routing over collaboration mode, roles, and model choices.
+- [LLM-Based Multi-Agent Blackboard System](https://arxiv.org/abs/2510.01285): shared blackboard for discovery and coordination.
+- [Collaborative Memory](https://arxiv.org/abs/2505.18279): dynamic access control for shared memory.
+- [MCP for Multi-Agent Systems](https://arxiv.org/abs/2504.21030): MCP as the context-sharing interface for multi-agent coordination.
 
-**Project:** Team Manager MCP
+## What Is Real
 
-**One-liner:** A MongoDB-native MCP team manager that helps a user plan, budget, dispatch, coordinate, and audit specialist agents.
+Implemented:
 
-**Live demo:** run `npm run mcp` from an MCP client and ask any complex question that benefits from specialist coordination.
+- MCP server with generic tools.
+- Dynamic task classification.
+- Capability-based room planning.
+- Generic source registration and ingestion.
+- Shared blackboard writes.
+- Visibility-aware memory retrieval.
+- Group token budget threshold actions.
+- Agent checkpoint, interruption, and resume records.
+- Final audited decision writes.
+- MongoDB collection and index setup.
 
-**MongoDB use:** Atlas organizes and oversees the collaboration: agent skills, room plan, task assignment, shared blackboard, scoped memory, group budget, checkpoints, source evidence, and audit.
+Boundary:
 
-**Pitch line:** This is not a vertical chatbot or a dashboard. It is the MongoDB-native team manager that turns a vague task into an approved multi-agent room with explicit skills, budgets, priorities, memory boundaries, shared context, and recoverable execution.
+- Team Manager does not secretly launch five LLM subprocesses itself. The MCP host runs the workers and calls Team Manager tools. Team Manager is the governance/control plane.
+- The source extractor is intentionally generic. It extracts query-relevant snippets from user-provided URLs; it is not a domain-specific scraper.
+
+## Pitch Line
+
+Team Manager MCP is the MongoDB-native control plane that turns any complex request into an approved specialist room with explicit skills, token budgets, memory boundaries, shared context, checkpoints, and an auditable final decision.

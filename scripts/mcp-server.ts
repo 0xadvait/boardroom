@@ -1148,7 +1148,7 @@ server.registerTool(
   "team_manager_reset",
   {
     title: "Reset Team Manager",
-    description: "Reset the room to a clean state and clear this run's MongoDB demo documents.",
+    description: "Reset the room to a clean state and clear this run's scoped MongoDB documents.",
     inputSchema: {}
   },
   async () => {
