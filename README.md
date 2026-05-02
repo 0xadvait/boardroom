@@ -29,7 +29,7 @@ User request
 - [Why It Exists](#why-it-exists)
 - [Features](#features)
 - [Hackathon Fit](#hackathon-fit)
-- [Demo Prompt](#demo-prompt)
+- [Example Requests](#example-requests)
 - [Architecture](#architecture)
 - [MCP Tools](#mcp-tools)
 - [MongoDB Collections](#mongodb-collections)
@@ -92,22 +92,23 @@ Team Manager:
 7. Records worker interruption and returns checkpoint context for the host to resume that worker.
 8. Emits a final audited decision where claims link back to blackboard entries and source evidence.
 
-## Demo Prompt
+## Example Requests
 
-Use any non-trivial question. The cleanest demo prompt so far:
+Team Manager is designed for open-ended work that benefits from several specialists. Example requests:
 
 ```text
-I want to evaluate whether my company should get listed on Coinbase as an exchange or not. Use Team Manager to classify the task, propose the agent room, ask me before starting, use sources I provide, keep private memory private, manage the group token budget, checkpoint each specialist, and return an audited recommendation.
+Evaluate whether my company should get listed on Coinbase as an exchange.
 ```
 
-What judges should see:
+```text
+Should we migrate our billing system from a monolith to event-driven services?
+```
 
-- The manager asks approval questions before starting.
-- The plan shows task type, routing cascade, specialists, models, and token caps.
-- The host registers live sources.
-- MongoDB receives source documents, blackboard entries, memory cards, checkpoints, budget updates, and audit records.
-- Killing or losing a worker becomes a checkpoint/resume event rather than lost state.
-- The final decision is traceable from claim to blackboard entry to source.
+```text
+Plan the fastest credible market-entry strategy for a new B2B product in the UK.
+```
+
+The MCP host can add operational requirements to the prompt, such as: ask for approval before starting, use only user-provided sources, keep private memory private, manage a group token budget, checkpoint each specialist, and return an audited recommendation.
 
 ## Current Specialist Pool
 
