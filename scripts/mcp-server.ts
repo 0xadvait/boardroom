@@ -11,7 +11,18 @@ import {
 import { getDemoState, resetDemoState, setDemoState } from "../lib/demo-store";
 import { approveGovernancePlan, buildGovernancePlan, governancePlanWrites } from "../lib/governance-plan";
 import { applyMongoWrites, closeMongoClient, resetMongoDemo } from "../lib/mongo";
-import type { DemoState, MongoWrite } from "../lib/types";
+import { fetchVendorSources, sourceDocument } from "../lib/live-sources";
+import { cosineSimilarity, pseudoEmbedding } from "../lib/scoring";
+import type {
+  AuditEvent,
+  BlackboardEntry,
+  CheckpointRecord,
+  DemoState,
+  MemoryCard,
+  MongoWrite,
+  SourceRef,
+  Visibility
+} from "../lib/types";
 
 function logEvent(event: string, fields: Record<string, unknown> = {}) {
   const rendered = Object.entries(fields)
@@ -49,7 +60,9 @@ function compactState(state: DemoState) {
       ? {
           id: state.governancePlan.id,
           status: state.governancePlan.status,
+          collaborationMode: state.governancePlan.collaborationMode,
           totalTokenBudget: state.governancePlan.totalTokenBudget,
+          routingStages: state.governancePlan.routingCascade.map((stage) => stage.stage),
           agents: state.governancePlan.agents.map((agent) => ({
             agentId: agent.agentId,
             name: agent.name,
@@ -81,6 +94,86 @@ async function applyAndStore(state: DemoState, writes: MongoWrite[]) {
   await applyMongoWrites(state, writes);
   setDemoState(state);
   return state;
+}
+
+function now(): string {
+  return new Date().toISOString();
+}
+
+function stableId(input: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function scopedId(state: DemoState, prefix: string, input = ""): string {
+  return `${state.runId}-${prefix}-${stableId(`${Date.now()}-${input}`)}`;
+}
+
+function agentName(state: DemoState, agentId: string): string {
+  return (
+    state.selectedAgents.find((agent) => agent.agentId === agentId)?.name ??
+    state.candidates.find((agent) => agent.agentId === agentId)?.name ??
+    agentId
+  );
+}
+
+function sourceRefsFromInput(sources: Array<{ url: string; title?: string; note?: string }>): SourceRef[] {
+  return sources.map((source, index) => ({
+    id: `src-user-${index + 1}-${stableId(source.url).slice(0, 8)}`,
+    title: source.title ?? new URL(source.url).hostname,
+    url: source.url,
+    note: source.note ?? "User-provided source for this Team Manager run.",
+    status: "pending"
+  }));
+}
+
+async function writeAuditEvent(state: DemoState, event: Record<string, unknown>) {
+  await applyAndStore(state, [
+    {
+      collection: "audit",
+      operation: "insertOne",
+      document: {
+        _id: scopedId(state, "audit-event", JSON.stringify(event)),
+        task_id: state.taskId,
+        created_at: new Date(),
+        ...event
+      }
+    }
+  ]);
+}
+
+async function persistTaskState(state: DemoState) {
+  await applyAndStore(state, [
+    {
+      collection: "tasks",
+      operation: "updateOne",
+      filter: { _id: state.taskId },
+      update: {
+        $set: {
+          status: state.status,
+          tokens_consumed: state.budget.consumed,
+          token_budget: state.budget.total,
+          budget_state: state.budget,
+          updated_at: new Date()
+        }
+      }
+    },
+    {
+      collection: "groups",
+      operation: "updateOne",
+      filter: { _id: state.groupId },
+      update: {
+        $set: {
+          tokens_consumed: state.budget.consumed,
+          updated_at: new Date()
+        }
+      }
+    }
+  ]);
 }
 
 const server = new McpServer({
@@ -192,6 +285,520 @@ server.registerTool(
 );
 
 server.registerTool(
+  "team_manager_set_sources",
+  {
+    title: "Set Room Sources",
+    description:
+      "Register arbitrary source URLs for the current room. These are the sources the host agent wants Team Manager to ingest and govern; no scenario-specific source pack is assumed.",
+    inputSchema: {
+      sources: z
+        .array(
+          z.object({
+            url: z.string().url(),
+            title: z.string().optional(),
+            note: z.string().optional()
+          })
+        )
+        .min(1)
+        .describe("Public source URLs selected by the host agent or user.")
+    }
+  },
+  async ({ sources }) => {
+    const state = getDemoState();
+    state.sources = sourceRefsFromInput(sources);
+    await writeAuditEvent(state, {
+      event_type: "sources_registered",
+      source_count: state.sources.length,
+      sources: state.sources.map((source) => ({ id: source.id, title: source.title, url: source.url }))
+    });
+    setDemoState(state);
+    logEvent("sources.registered", {
+      count: state.sources.length,
+      urls: state.sources.map((source) => source.url)
+    });
+
+    return toolJson({
+      message: "Sources registered. Call team_manager_ingest_sources or team_manager_start_room to fetch and store them.",
+      sources: state.sources
+    });
+  }
+);
+
+server.registerTool(
+  "team_manager_ingest_sources",
+  {
+    title: "Ingest Room Sources",
+    description:
+      "Fetch the current room's source URLs, extract generic evidence snippets from the task query, and store them in MongoDB source_documents.",
+    inputSchema: {}
+  },
+  async () => {
+    const state = getDemoState();
+    if (state.sources.length === 0) {
+      return toolJson({
+        message: "No sources are registered. Call team_manager_set_sources first.",
+        nextTool: "team_manager_set_sources"
+      });
+    }
+
+    const fetched = await fetchVendorSources(state.sources, state.taskPrompt);
+    state.sources = fetched;
+    await applyAndStore(state, [
+      {
+        collection: "source_documents",
+        operation: "insertMany",
+        documents: fetched.map((source) => sourceDocument(source, state.runId, state.taskId))
+      },
+      {
+        collection: "audit",
+        operation: "insertOne",
+        document: {
+          _id: scopedId(state, "audit-sources-ingested"),
+          task_id: state.taskId,
+          event_type: "sources_ingested",
+          fetched: fetched.filter((source) => source.status === "fetched").length,
+          evidence_count: fetched.reduce((sum, source) => sum + source.evidence.length, 0),
+          created_at: new Date()
+        }
+      }
+    ]);
+    logEvent("sources.ingested.generic", {
+      fetched: fetched.filter((source) => source.status === "fetched").length,
+      evidenceSnippets: fetched.reduce((sum, source) => sum + source.evidence.length, 0)
+    });
+
+    return toolJson({
+      message: "Sources ingested into MongoDB source_documents.",
+      sources: state.sources.map((source) => ({
+        id: source.id,
+        title: source.title,
+        url: source.url,
+        status: source.status,
+        evidenceCount: source.evidence?.length ?? 0,
+        evidence: source.evidence
+      }))
+    });
+  }
+);
+
+server.registerTool(
+  "team_manager_post_blackboard",
+  {
+    title: "Post Blackboard Entry",
+    description:
+      "Append a source-linked finding, decision, request, progress update, or warning to the shared MongoDB blackboard.",
+    inputSchema: {
+      agentId: z.string().describe("Authoring agent id, for example agent-security."),
+      entryType: z.enum(["discovery", "decision", "request", "progress", "warning"]),
+      visibility: z.enum(["private", "team", "global"]).default("team"),
+      content: z.string().min(1),
+      sourceIds: z.array(z.string()).default([]),
+      reuseCount: z.number().int().nonnegative().default(1),
+      criticRatified: z.boolean().default(false).describe("Promote this entry to team visibility even before 3-agent reuse.")
+    }
+  },
+  async ({ agentId, entryType, visibility, content, sourceIds, reuseCount, criticRatified }) => {
+    const state = getDemoState();
+    const createdAt = now();
+    const promoted = visibility !== "private" || reuseCount >= 3 || criticRatified;
+    const effectiveVisibility = visibility === "private" && promoted ? "team" : visibility;
+    const entry: BlackboardEntry = {
+      id: scopedId(state, "bb", `${agentId}-${content}`),
+      taskId: state.taskId,
+      entryType,
+      visibility: effectiveVisibility,
+      agentId,
+      agentName: agentName(state, agentId),
+      content,
+      sourceIds,
+      contentEmbedding: pseudoEmbedding(content),
+      reactions: [],
+      createdAt,
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 4).toISOString(),
+      promoted,
+      reuseCount
+    };
+    state.blackboard = [entry, ...state.blackboard].slice(0, 50);
+    await applyAndStore(state, [
+      {
+        collection: "blackboard_entries",
+        operation: "insertOne",
+        document: {
+          _id: entry.id,
+          task_id: entry.taskId,
+          entry_type: entry.entryType,
+          visibility: entry.visibility,
+          agent_id: entry.agentId,
+          agent_name: entry.agentName,
+          content: entry.content,
+          source_ids: entry.sourceIds,
+          content_embedding: entry.contentEmbedding,
+          reactions: entry.reactions,
+          expires_at: new Date(entry.expiresAt),
+          promoted: entry.promoted,
+          reuse_count: entry.reuseCount,
+          created_at: new Date(entry.createdAt)
+        }
+      },
+      {
+        collection: "audit",
+        operation: "insertOne",
+        document: {
+          _id: scopedId(state, "audit-blackboard", entry.id),
+          task_id: state.taskId,
+          event_type: "blackboard_posted",
+          blackboard_entry_id: entry.id,
+          agent_id: agentId,
+          source_ids: sourceIds,
+          created_at: new Date()
+        }
+      }
+    ]);
+    logEvent("blackboard.posted", {
+      entryId: entry.id,
+      agent: entry.agentName,
+      entryType,
+      visibility: effectiveVisibility,
+      promoted,
+      sourceIds
+    });
+
+    return toolJson({
+      message: "Blackboard entry stored.",
+      entry
+    });
+  }
+);
+
+server.registerTool(
+  "team_manager_query_context",
+  {
+    title: "Query Shared Context",
+    description:
+      "Retrieve relevant blackboard entries, scoped memory cards, and source evidence for an agent using visibility filters and local vector similarity.",
+    inputSchema: {
+      query: z.string().min(1),
+      agentId: z.string().optional(),
+      teamId: z.string().optional(),
+      topK: z.number().int().positive().default(5)
+    }
+  },
+  async ({ query, agentId, teamId, topK }) => {
+    const state = getDemoState();
+    const vector = pseudoEmbedding(query);
+    const currentTeamId = teamId ?? state.teamId;
+    const visibleMemory = state.memoryCards.filter((card) => {
+      if (card.visibility === "global") return true;
+      if (card.visibility === "team") return card.teamId === currentTeamId;
+      return Boolean(agentId && card.ownerAgentId === agentId);
+    });
+    const blackboard = state.blackboard
+      .map((entry) => ({ ...entry, score: cosineSimilarity(vector, entry.contentEmbedding) }))
+      .sort((left, right) => right.score - left.score)
+      .slice(0, topK);
+    const memory = visibleMemory
+      .map((card) => ({ ...card, score: cosineSimilarity(vector, card.embedding) }))
+      .sort((left, right) => right.score - left.score)
+      .slice(0, topK);
+    const sourceEvidence = state.sources
+      .flatMap((source) =>
+        (source.evidence ?? []).map((evidence) => ({
+          sourceId: source.id,
+          title: source.title,
+          url: source.url,
+          ...evidence,
+          score: cosineSimilarity(vector, pseudoEmbedding(`${evidence.label} ${evidence.snippet}`))
+        }))
+      )
+      .sort((left, right) => right.score - left.score)
+      .slice(0, topK);
+
+    await writeAuditEvent(state, {
+      event_type: "context_queried",
+      agent_id: agentId,
+      team_id: currentTeamId,
+      query,
+      returned_blackboard: blackboard.length,
+      returned_memory: memory.length,
+      returned_source_evidence: sourceEvidence.length
+    });
+
+    return toolJson({
+      query,
+      visibility: {
+        agentId,
+        teamId: currentTeamId
+      },
+      blackboard,
+      memory,
+      sourceEvidence
+    });
+  }
+);
+
+server.registerTool(
+  "team_manager_write_memory",
+  {
+    title: "Write Scoped Memory",
+    description: "Write private, team, or global memory into MongoDB memory_cards.",
+    inputSchema: {
+      ownerAgentId: z.string(),
+      visibility: z.enum(["private", "team", "global"]).default("private"),
+      content: z.string().min(1),
+      reuseCount: z.number().int().nonnegative().default(1),
+      criticRatified: z.boolean().default(false).describe("Promote this memory to team visibility even before 3-agent reuse."),
+      sourceEntryId: z.string().optional()
+    }
+  },
+  async ({ ownerAgentId, visibility, content, reuseCount, criticRatified, sourceEntryId }) => {
+    const state = getDemoState();
+    const promoted = visibility !== "private" || reuseCount >= 3 || criticRatified;
+    const effectiveVisibility = visibility === "private" && promoted ? "team" : visibility;
+    const card: MemoryCard = {
+      id: scopedId(state, "memory", `${ownerAgentId}-${content}`),
+      taskId: state.taskId,
+      ownerAgentId,
+      teamId: state.teamId,
+      visibility: effectiveVisibility,
+      content,
+      embedding: pseudoEmbedding(content),
+      reuseCount,
+      promotedAt: promoted ? now() : undefined,
+      sourceEntryId
+    };
+    state.memoryCards = [card, ...state.memoryCards].slice(0, 50);
+    await applyAndStore(state, [
+      {
+        collection: "memory_cards",
+        operation: "insertOne",
+        document: {
+          _id: card.id,
+          task_id: card.taskId,
+          owner_agent_id: card.ownerAgentId,
+          team_id: card.teamId,
+          visibility: card.visibility,
+          content: card.content,
+          embedding: card.embedding,
+          reuse_count: card.reuseCount,
+          promoted_at: card.promotedAt ? new Date(card.promotedAt) : undefined,
+          source_entry_id: card.sourceEntryId,
+          created_at: new Date()
+        }
+      }
+    ]);
+
+    return toolJson({
+      message: "Memory card stored.",
+      card
+    });
+  }
+);
+
+server.registerTool(
+  "team_manager_record_checkpoint",
+  {
+    title: "Record Agent Checkpoint",
+    description: "Persist an agent checkpoint to MongoDB agent_performance_records for crash recovery.",
+    inputSchema: {
+      agentId: z.string(),
+      stepIndex: z.number().int().nonnegative(),
+      partialOutput: z.string().default(""),
+      pendingToolCalls: z.array(z.string()).default([]),
+      tokensInput: z.number().int().nonnegative().default(0),
+      tokensOutput: z.number().int().nonnegative().default(0),
+      outcome: z.enum(["running", "checkpoint", "resumed", "success", "killed"]).default("checkpoint")
+    }
+  },
+  async ({ agentId, stepIndex, partialOutput, pendingToolCalls, tokensInput, tokensOutput, outcome }) => {
+    const state = getDemoState();
+    const startedAt = now();
+    const record: CheckpointRecord = {
+      id: scopedId(state, "checkpoint", `${agentId}-${stepIndex}-${partialOutput}`),
+      taskId: state.taskId,
+      agentId,
+      agentName: agentName(state, agentId),
+      stepIndex,
+      pendingToolCalls,
+      partialOutput,
+      mongoChangeStreamResumeToken: `resume-token-${state.runId}-${agentId}-${stepIndex}`,
+      startedAt,
+      tokensInput,
+      tokensOutput,
+      outcome
+    };
+    state.checkpoints = [record, ...state.checkpoints].slice(0, 50);
+    await applyAndStore(state, [
+      {
+        collection: "agent_performance_records",
+        operation: "insertOne",
+        document: {
+          _id: record.id,
+          task_id: record.taskId,
+          agent_id: record.agentId,
+          agent_name: record.agentName,
+          task_type: state.taskType,
+          step_index: record.stepIndex,
+          pending_tool_calls: record.pendingToolCalls,
+          partial_output: record.partialOutput,
+          mongo_change_stream_resume_token: record.mongoChangeStreamResumeToken,
+          started_at: new Date(record.startedAt),
+          tokens_input: record.tokensInput,
+          tokens_output: record.tokensOutput,
+          tokens_total: record.tokensInput + record.tokensOutput,
+          outcome: record.outcome
+        }
+      }
+    ]);
+
+    return toolJson({
+      message: "Checkpoint stored.",
+      checkpoint: record
+    });
+  }
+);
+
+server.registerTool(
+  "team_manager_update_budget",
+  {
+    title: "Update Token Budget",
+    description: "Update group token usage and return threshold actions for the host agent to enforce.",
+    inputSchema: {
+      tokensConsumed: z.number().int().nonnegative(),
+      tokenBudget: z.number().int().positive().optional()
+    }
+  },
+  async ({ tokensConsumed, tokenBudget }) => {
+    const state = getDemoState();
+    if (tokenBudget) {
+      state.budget.total = tokenBudget;
+    }
+    state.budget.consumed = Math.min(tokensConsumed, state.budget.total);
+    const ratio = state.budget.consumed / state.budget.total;
+    const actions: string[] = [];
+    if (ratio >= 0.7 && !state.budget.warnedAt70) {
+      state.budget.warnedAt70 = true;
+      actions.push("inject_budget_warning");
+    }
+    if (ratio >= 0.9 && !state.budget.summarizedAt90) {
+      state.budget.summarizedAt90 = true;
+      state.budget.summaryTokensSaved = 0;
+      state.budget.summaryReplacementTokens = 0;
+      actions.push("spawn_summarizer_or_compact_context");
+    }
+    if (ratio >= 1) {
+      actions.push(state.budget.actionAt100);
+    }
+    if (actions.length > 0) {
+      await writeAuditEvent(state, {
+        event_type: "budget_threshold_crossed",
+        tokens_consumed: state.budget.consumed,
+        token_budget: state.budget.total,
+        percent_used: Number((ratio * 100).toFixed(1)),
+        actions
+      });
+    }
+    await persistTaskState(state);
+
+    return toolJson({
+      message: "Budget updated.",
+      budget: state.budget,
+      percentUsed: Number((ratio * 100).toFixed(1)),
+      actions
+    });
+  }
+);
+
+server.registerTool(
+  "team_manager_emit_decision",
+  {
+    title: "Emit Audited Decision",
+    description: "Store the final decision and claim-to-evidence audit trail in MongoDB.",
+    inputSchema: {
+      verdict: z.string(),
+      confidence: z.number().min(0).max(1),
+      rationale: z.string(),
+      votes: z.record(z.enum(["buy", "hold", "no_buy"])).default({}),
+      claims: z
+        .array(
+          z.object({
+            agentId: z.string(),
+            claim: z.string(),
+            blackboardEntryId: z.string(),
+            sourceIds: z.array(z.string()).default([]),
+            confidence: z.number().min(0).max(1).default(0.7)
+          })
+        )
+        .default([])
+    }
+  },
+  async ({ verdict, confidence, rationale, votes, claims }) => {
+    const state = getDemoState();
+    state.status = "complete";
+    state.finalDecision = { verdict, confidence, rationale, votes };
+    const createdAt = now();
+    const auditEvents: AuditEvent[] = claims.map((claim) => ({
+      id: scopedId(state, "audit-claim", `${claim.agentId}-${claim.claim}`),
+      taskId: state.taskId,
+      claim: claim.claim,
+      agentId: claim.agentId,
+      agentName: agentName(state, claim.agentId),
+      blackboardEntryId: claim.blackboardEntryId,
+      sourceIds: claim.sourceIds,
+      confidence: claim.confidence,
+      createdAt
+    }));
+    state.audit = [...auditEvents, ...state.audit].slice(0, 100);
+    await applyAndStore(state, [
+      {
+        collection: "tasks",
+        operation: "updateOne",
+        filter: { _id: state.taskId },
+        update: {
+          $set: {
+            status: state.status,
+            final_decision: state.finalDecision,
+            updated_at: new Date()
+          }
+        }
+      },
+      {
+        collection: "audit",
+        operation: "insertMany",
+        documents: [
+          {
+            _id: scopedId(state, "audit-decision"),
+            task_id: state.taskId,
+            event_type: "decision",
+            verdict,
+            confidence,
+            rationale,
+            votes,
+            created_at: new Date(createdAt)
+          },
+          ...auditEvents.map((event) => ({
+            _id: event.id,
+            task_id: event.taskId,
+            claim: event.claim,
+            agent_id: event.agentId,
+            agent_name: event.agentName,
+            blackboard_entry_id: event.blackboardEntryId,
+            source_ids: event.sourceIds,
+            confidence: event.confidence,
+            created_at: new Date(event.createdAt)
+          }))
+        ]
+      }
+    ]);
+
+    return toolJson({
+      message: "Decision and audit trail stored.",
+      decision: state.finalDecision,
+      audit: auditEvents
+    });
+  }
+);
+
+server.registerTool(
   "team_manager_start_room",
   {
     title: "Start Governed Agent Room",
@@ -267,6 +874,39 @@ server.registerTool(
     });
 
     const spawnResult = spawnTeamRoom(state);
+    const usesDemoPostHogSources =
+      spawnResult.state.sources.some((source) => source.id.startsWith("src-posthog")) &&
+      spawnResult.state.taskPrompt.toLowerCase().includes("posthog");
+    const hasUserSources = spawnResult.state.sources.some((source) => source.id.startsWith("src-user"));
+
+    if (!usesDemoPostHogSources && !hasUserSources) {
+      spawnResult.state.sources = [];
+      state = await applyAndStore(spawnResult.state, spawnResult.writes);
+      logEvent("room.started.awaiting_sources", {
+        taskId: state.taskId,
+        reason: "custom task has no user-provided sources"
+      });
+      return toolJson({
+        message:
+          "Team Manager started the approved room and dispatched agents, but did not ingest demo sources for this custom task. Call team_manager_set_sources, then team_manager_ingest_sources.",
+        nextTools: ["team_manager_set_sources", "team_manager_ingest_sources"],
+        state: compactState(state)
+      });
+    }
+
+    if (hasUserSources) {
+      state = await applyAndStore(spawnResult.state, spawnResult.writes);
+      logEvent("room.started.ready_for_user_source_ingestion", {
+        taskId: state.taskId,
+        sources: state.sources.length
+      });
+      return toolJson({
+        message: "Team Manager started the approved room and dispatched agents. Call team_manager_ingest_sources to fetch the registered sources.",
+        nextTool: "team_manager_ingest_sources",
+        state: compactState(state)
+      });
+    }
+
     const ingestResult = await ingestLiveSources(spawnResult.state);
     state = await applyAndStore(ingestResult.state, [...spawnResult.writes, ...ingestResult.writes]);
     logEvent("dispatch.selected", {

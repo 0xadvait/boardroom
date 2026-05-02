@@ -71,9 +71,72 @@ function findSnippet(text: string, patterns: string[]): string | null {
   return text.slice(start, end).trim();
 }
 
-function extractEvidence(source: SourceRef, text: string): SourceEvidence[] {
+const STOPWORDS = new Set([
+  "about",
+  "after",
+  "against",
+  "between",
+  "company",
+  "could",
+  "evaluate",
+  "from",
+  "getting",
+  "have",
+  "listed",
+  "should",
+  "their",
+  "there",
+  "these",
+  "this",
+  "want",
+  "whether",
+  "with",
+  "would",
+  "your"
+]);
+
+function queryTokens(query: string): string[] {
+  return Array.from(
+    new Set(
+      query
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, " ")
+        .split(/\s+/)
+        .filter((token) => token.length >= 4 && !STOPWORDS.has(token))
+    )
+  ).slice(0, 18);
+}
+
+function genericEvidence(source: SourceRef, text: string, query: string): SourceEvidence[] {
+  const tokens = queryTokens(`${query} ${source.title} ${source.note}`);
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length >= 80);
+
+  const candidates = sentences.map((sentence) => {
+    const lower = sentence.toLowerCase();
+    const score = tokens.reduce((sum, token) => sum + (lower.includes(token) ? 1 : 0), 0);
+    return { sentence, score };
+  });
+
+  const ranked = candidates
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 5);
+
+  const fallback = ranked.length > 0 ? ranked : sentences.slice(0, 3).map((sentence) => ({ sentence, score: 1 }));
+
+  return fallback.map((candidate, index) => ({
+    label: `generic_${index + 1}`,
+    snippet: candidate.sentence.length > 340 ? `${candidate.sentence.slice(0, 337).trim()}...` : candidate.sentence,
+    confidence: Math.min(0.84, 0.55 + candidate.score * 0.08)
+  }));
+}
+
+function extractEvidence(source: SourceRef, text: string, query = ""): SourceEvidence[] {
   const extractors = EXTRACTORS[source.id] ?? [];
-  return extractors
+  const evidence = extractors
     .map((extractor) => {
       const snippet = findSnippet(text, extractor.patterns);
       if (!snippet) {
@@ -86,9 +149,11 @@ function extractEvidence(source: SourceRef, text: string): SourceEvidence[] {
       };
     })
     .filter((item): item is SourceEvidence => item !== null);
+
+  return evidence.length > 0 ? evidence : genericEvidence(source, text, query);
 }
 
-export async function fetchVendorSources(sources: SourceRef[]): Promise<FetchedSource[]> {
+export async function fetchVendorSources(sources: SourceRef[], query = ""): Promise<FetchedSource[]> {
   return Promise.all(
     sources.map(async (source) => {
       const fetchedAt = new Date().toISOString();
@@ -105,7 +170,7 @@ export async function fetchVendorSources(sources: SourceRef[]): Promise<FetchedS
         });
         const html = await response.text();
         const text = normalizeHtml(html);
-        const evidence = extractEvidence(source, text);
+        const evidence = extractEvidence(source, text, query);
 
         return {
           ...source,

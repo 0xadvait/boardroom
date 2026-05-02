@@ -25,13 +25,29 @@ It also touches prolonged coordination through checkpoint/resume and adaptive re
 
 The intended MCP sequence is collaborative:
 
-1. `team_manager_plan_room`: proposes the measurement formula, specialist roster, token allocation, model profiles, memory visibility, priorities, and user questions.
+1. `team_manager_plan_room`: proposes the measurement formula, routing cascade, specialist roster, versioned capability vectors, token allocation, model profiles, memory visibility, priorities, and user questions.
 2. `team_manager_approve_plan`: records the human's approval or revision request in MongoDB.
-3. `team_manager_start_room`: dispatches the approved room and fetches live public sources.
-4. `team_manager_advance`: advances blackboard posts, subscriptions, token cascade, memory promotion, and decision work.
-5. `team_manager_kill_agent`: simulates killing `ContractRedFlags` after checkpoint persistence.
-6. `team_manager_resume_agent`: resumes that agent from MongoDB checkpoint.
-7. `team_manager_state`: returns the current room state and audit graph.
+3. `team_manager_set_sources`: registers the URLs the host agent or user wants the room to use.
+4. `team_manager_start_room`: dispatches the approved room. For custom tasks it refuses to ingest the PostHog demo source pack unless user sources are provided.
+5. `team_manager_ingest_sources`: fetches registered URLs, extracts generic evidence snippets from the task query, and writes `source_documents`.
+6. `team_manager_post_blackboard`: lets host-run specialist agents publish source-linked findings to shared context.
+7. `team_manager_query_context`: retrieves relevant blackboard, memory, and source evidence with visibility filtering.
+8. `team_manager_write_memory`: stores private, team, or global memory cards.
+9. `team_manager_record_checkpoint`: persists agent checkpoints.
+10. `team_manager_update_budget`: updates group token usage and returns threshold actions.
+11. `team_manager_emit_decision`: stores the final decision and claim-to-evidence audit trail.
+
+The `team_manager_advance`, `team_manager_kill_agent`, and `team_manager_resume_agent` tools are retained for the rehearsed PostHog demo replay. They are intentionally separate from the generic MCP primitives above.
+
+## Design Anchors
+
+These papers influenced the implementation, but the demo should stay product-led rather than citation-led:
+
+- [Federation of Agents](https://arxiv.org/abs/2509.20175): selected agents expose a versioned capability vector with declared skills, proven performance, cost, and constraints.
+- [MasRouter](https://arxiv.org/abs/2502.11133): `team_manager_plan_room` returns a cascaded routing plan: collaboration mode, candidate retrieval, capability scoring, role allocation, model assignment, budget assignment, and memory boundary.
+- [LLM-Based Multi-Agent Blackboard System](https://arxiv.org/abs/2510.01285): shared work happens through append-only `blackboard_entries` plus explicit context queries.
+- [Collaborative Memory](https://arxiv.org/abs/2505.18279): `team_manager_query_context` enforces private/team/global memory visibility before returning context.
+- [MCP for Multi-Agent Systems](https://arxiv.org/abs/2504.21030): the product is an MCP control plane, not a dashboard.
 
 ## Quick Start
 
@@ -130,7 +146,7 @@ The demo fetches these public source URLs live and stores extracted snippets in 
 
 **One-liner:** A MongoDB-native MCP team manager that helps a user plan, budget, dispatch, coordinate, and audit specialist agents.
 
-**Live demo:** run `npm run mcp` from an MCP client, or use `npm run harness -- "<request>"` for the terminal walkthrough.
+**Live demo:** run `npm run mcp` from an MCP client. Use `npm run harness -- "<request>"` only for the scripted PostHog walkthrough.
 
 **MongoDB use:** Atlas organizes and oversees the collaboration: agent skills, room plan, task assignment, shared blackboard, scoped memory, group budget, checkpoints, source evidence, and audit.
 

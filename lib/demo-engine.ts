@@ -435,7 +435,7 @@ export async function ingestLiveSources(state: DemoState): Promise<{ state: Demo
   const working = structuredClone(state) as DemoState;
   const writes: MongoWrite[] = [];
 
-  const fetched = await fetchVendorSources(working.sources);
+  const fetched = await fetchVendorSources(working.sources, working.taskPrompt);
   working.sources = fetched;
   working.updatedAt = now();
 

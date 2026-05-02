@@ -1,4 +1,4 @@
-import type { AgentProfile, GovernancePlan, ModelProfile, MongoWrite, PlannedAgent } from "./types";
+import type { AgentProfile, CapabilityVector, GovernancePlan, ModelProfile, MongoWrite, PlannedAgent, RoutingStage } from "./types";
 import { scoreAgents } from "./scoring";
 
 const DEFAULT_WEIGHTS = {
@@ -81,6 +81,33 @@ function modelForAgent(agent: AgentProfile): ModelProfile {
   return modelProfile("evidence");
 }
 
+function capabilityVector(agent: AgentProfile, taskType: string): CapabilityVector {
+  const proven = agent.provenSkills[taskType] ?? {
+    successRate: 0.5,
+    avgDurationMs: agent.avgDurationMs,
+    avgTokens: 7000,
+    runs: 0
+  };
+
+  return {
+    version: "vcv-2026-05-02",
+    declaredSkills: agent.skills,
+    capabilities: agent.capabilities,
+    provenTaskType: taskType,
+    successRate: proven.successRate,
+    avgDurationMs: proven.avgDurationMs,
+    avgTokens: proven.avgTokens,
+    runs: proven.runs,
+    tokenEfficiency: agent.tokenEfficiency,
+    lastPerformedAt: agent.lastPerformedAt,
+    constraints: [
+      "Must cite source evidence before publishing decision claims.",
+      "May only read private memory owned by this agent; team/global memory is shared by policy.",
+      "Delegated capability scope is intersected with the manager's room capabilities."
+    ]
+  };
+}
+
 function responsibilities(agent: AgentProfile): string[] {
   const base: Record<string, string[]> = {
     "agent-security": [
@@ -121,7 +148,7 @@ function successCriteria(agent: AgentProfile): string[] {
   ];
 }
 
-function plannedAgent(agent: AgentProfile, totalBudget: number): PlannedAgent {
+function plannedAgent(agent: AgentProfile, totalBudget: number, taskType: string): PlannedAgent {
   return {
     agentId: agent.agentId,
     name: agent.name,
@@ -129,11 +156,68 @@ function plannedAgent(agent: AgentProfile, totalBudget: number): PlannedAgent {
     priority: priority(agent),
     tokenBudget: Math.round((totalBudget * budgetShare(agent)) / 100) * 100,
     model: modelForAgent(agent),
+    capabilityVector: capabilityVector(agent, taskType),
+    delegationCapabilityScope: agent.capabilities.filter((capability) =>
+      ["cite_sources", "write_blackboard", "read_blackboard", "request_evidence", "read_public_web"].includes(capability)
+    ),
     memoryScopes: ["private", "team", "global"],
     blackboardTopK: 5,
     responsibilities: responsibilities(agent),
     successCriteria: successCriteria(agent)
   };
+}
+
+function routingCascade(agents: PlannedAgent[], totalTokenBudget: number): RoutingStage[] {
+  return [
+    {
+      stage: "collaboration_mode",
+      decision: "Use a manager-supervised specialist room, not a single autonomous agent.",
+      evidence: [
+        "The request needs independent security, pricing, reference, integration, and contract perspectives.",
+        "The manager keeps approval, budget, memory, and final synthesis centralized."
+      ]
+    },
+    {
+      stage: "candidate_retrieval",
+      decision: "Retrieve 12 candidates from MongoDB agent_profiles by semantic task relevance.",
+      evidence: [
+        "Each agent profile has declared skills, capabilities, description_embedding, and historical performance.",
+        "The Atlas implementation path is $vectorSearch over description_embedding followed by performance lookup."
+      ]
+    },
+    {
+      stage: "capability_scoring",
+      decision: "Rank candidates with the weighted capability formula and select the top five.",
+      evidence: [
+        "Weights are 25% prompt relevance, 35% historical success, 10% recency, 15% latency, and 15% token efficiency.",
+        `Selected agents: ${agents.map((agent) => agent.name).join(", ")}.`
+      ]
+    },
+    {
+      stage: "role_allocation",
+      decision: "Allocate one specialist to each procurement risk lane.",
+      evidence: agents.map((agent) => `${agent.name}: ${agent.role}`)
+    },
+    {
+      stage: "model_assignment",
+      decision: "Use higher-accuracy reviewer profiles for critical risk gates and faster evidence workers for extraction lanes.",
+      evidence: agents.map((agent) => `${agent.name}: ${agent.model.model} because ${agent.model.reason}`)
+    },
+    {
+      stage: "budget_assignment",
+      decision: `Use one group budget of ${totalTokenBudget.toLocaleString()} tokens with per-agent caps and manager/summarizer reserves.`,
+      evidence: agents.map((agent) => `${agent.name}: ${agent.tokenBudget.toLocaleString()} token cap`)
+    },
+    {
+      stage: "memory_boundary",
+      decision: "Use private-by-default memory, team/global retrieval filters, and source-linked audit before final claims.",
+      evidence: [
+        "Private memory requires owner_agent_id match.",
+        "Team memory requires team_id match.",
+        "Global memory is visible to all room agents."
+      ]
+    }
+  ];
 }
 
 export function buildGovernancePlan(options: {
@@ -146,7 +230,7 @@ export function buildGovernancePlan(options: {
 }): GovernancePlan {
   const totalTokenBudget = options.totalTokenBudget ?? 50_000;
   const ranked = scoreAgents(options.request, options.taskType, options.candidates);
-  const agents = ranked.slice(0, 5).map((agent) => plannedAgent(agent, totalTokenBudget));
+  const agents = ranked.slice(0, 5).map((agent) => plannedAgent(agent, totalTokenBudget, options.taskType));
   const managerReserve = Math.round(totalTokenBudget * 0.07);
   const summarizerReserve = Math.round(totalTokenBudget * 0.07);
 
@@ -157,6 +241,8 @@ export function buildGovernancePlan(options: {
     vendor: options.vendor,
     taskType: options.taskType,
     totalTokenBudget,
+    collaborationMode: "manager_supervised_room",
+    routingCascade: routingCascade(agents, totalTokenBudget),
     dispatchWeights: DEFAULT_WEIGHTS,
     budgetPolicy: {
       warningAt: 0.7,
@@ -172,6 +258,11 @@ export function buildGovernancePlan(options: {
       promotionRule: "Promote to team memory after 3 distinct agents reuse or cite the item.",
       sensitiveDataRule: "Keep credentials, PII, private contracts, and unverified claims private unless the user approves promotion."
     },
+    blackboardPolicy: {
+      writeSemantics: "Append-only source-linked posts; agents never mutate another agent's findings.",
+      subscriptionRule: "Agents query top-k relevant blackboard, memory, and source evidence for their current subtask.",
+      noiseControl: "Private findings stay out of team context until 3-agent reuse or critic ratification promotes them."
+    },
     retrievalPolicy: {
       blackboardTopK: 5,
       memoryTopK: 5,
@@ -184,6 +275,9 @@ export function buildGovernancePlan(options: {
         `I am thinking of measuring agent fit as 25% task relevance, 35% historical success, 10% recency, 15% latency, and 15% token efficiency. Should token efficiency be weighted higher for this run?`,
         `I am thinking of initializing ${agents.map((agent) => agent.name).join(", ")}. Is any specialist missing or unnecessary?`,
         `I am thinking of a ${totalTokenBudget.toLocaleString()} token group budget with hard abort at 100%, warning at 70%, and summarization at 90%. Is that too conservative?`,
+        `I am thinking of this routing cascade: ${routingCascade(agents, totalTokenBudget)
+          .map((stage) => stage.stage)
+          .join(" -> ")}. Should I remove any stage for speed?`,
         "I am thinking of MongoDB as the room state: agent_profiles for skills, tasks/groups for assignment, blackboard_entries for shared context, memory_cards for scoped memory, and audit for claim evidence. Does that collaboration model match the way you want this team to work?",
         "I am thinking of private-by-default memory, team promotion after 3 reuses, and source-linked audit for all decision claims. Should any evidence class stay private?",
         "I am picking high-accuracy reviewer profiles for security/contracts, faster evidence-worker profiles for pricing/integration/references, and a compact summarizer. Do you prefer speed, cost, or caution?"
@@ -218,9 +312,12 @@ export function governancePlanWrites(plan: GovernancePlan): MongoWrite[] {
         vendor: plan.vendor,
         task_type: plan.taskType,
         total_token_budget: plan.totalTokenBudget,
+        collaboration_mode: plan.collaborationMode,
+        routing_cascade: plan.routingCascade,
         dispatch_weights: plan.dispatchWeights,
         budget_policy: plan.budgetPolicy,
         memory_policy: plan.memoryPolicy,
+        blackboard_policy: plan.blackboardPolicy,
         retrieval_policy: plan.retrievalPolicy,
         team_manager: plan.teamManager,
         agents: plan.agents,
@@ -263,6 +360,7 @@ export function approveGovernancePlan(
     status: options.approved ? "approved" : "revisions_requested",
     totalTokenBudget,
     agents,
+    routingCascade: routingCascade(agents, totalTokenBudget),
     budgetPolicy: {
       ...plan.budgetPolicy,
       managerReserve: Math.round(totalTokenBudget * 0.07),
@@ -283,6 +381,7 @@ export function approveGovernancePlan(
           $set: {
             status: updated.status,
             total_token_budget: updated.totalTokenBudget,
+            routing_cascade: updated.routingCascade,
             budget_policy: updated.budgetPolicy,
             agents: updated.agents,
             approved_at: updated.approvedAt ? new Date(updated.approvedAt) : undefined,

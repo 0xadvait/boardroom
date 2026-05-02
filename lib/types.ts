@@ -196,6 +196,33 @@ export interface ModelProfile {
   reason: string;
 }
 
+export interface CapabilityVector {
+  version: string;
+  declaredSkills: string[];
+  capabilities: string[];
+  provenTaskType: string;
+  successRate: number;
+  avgDurationMs: number;
+  avgTokens: number;
+  runs: number;
+  tokenEfficiency: number;
+  lastPerformedAt: string;
+  constraints: string[];
+}
+
+export interface RoutingStage {
+  stage:
+    | "collaboration_mode"
+    | "candidate_retrieval"
+    | "capability_scoring"
+    | "role_allocation"
+    | "model_assignment"
+    | "budget_assignment"
+    | "memory_boundary";
+  decision: string;
+  evidence: string[];
+}
+
 export interface PlannedAgent {
   agentId: string;
   name: string;
@@ -203,6 +230,8 @@ export interface PlannedAgent {
   priority: "critical" | "high" | "medium";
   tokenBudget: number;
   model: ModelProfile;
+  capabilityVector: CapabilityVector;
+  delegationCapabilityScope: string[];
   memoryScopes: Visibility[];
   blackboardTopK: number;
   responsibilities: string[];
@@ -216,6 +245,8 @@ export interface GovernancePlan {
   vendor: string;
   taskType: string;
   totalTokenBudget: number;
+  collaborationMode: "single_agent" | "manager_supervised_room" | "parallel_specialists";
+  routingCascade: RoutingStage[];
   dispatchWeights: {
     promptRelevance: number;
     historicalSuccess: number;
@@ -236,6 +267,11 @@ export interface GovernancePlan {
     defaultVisibility: Visibility;
     promotionRule: string;
     sensitiveDataRule: string;
+  };
+  blackboardPolicy: {
+    writeSemantics: string;
+    subscriptionRule: string;
+    noiseControl: string;
   };
   retrievalPolicy: {
     blackboardTopK: number;

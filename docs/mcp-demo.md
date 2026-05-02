@@ -34,15 +34,16 @@ I want to due diligence PostHog as a vendor for my B2B SaaS business in the most
 Expected tool sequence:
 
 1. `team_manager_plan_room`
-2. The MCP host asks the user the manager's returned questions.
+2. The MCP host asks the user the manager's returned questions. The returned plan includes the routing cascade, versioned capability vectors, model choices, and per-agent token caps.
 3. `team_manager_approve_plan`
-4. `team_manager_start_room`
-5. `team_manager_advance` until the 70 percent budget warning appears
-6. `team_manager_advance` again to trigger the 90 percent summarizer
-7. `team_manager_kill_agent`
-8. `team_manager_resume_agent`
-9. `team_manager_advance` for the final decision
-10. `team_manager_state` with `includeFullAudit=true`
+4. `team_manager_set_sources`
+5. `team_manager_start_room`
+6. `team_manager_ingest_sources`
+7. Host-run specialist agents use `team_manager_query_context`, `team_manager_post_blackboard`, `team_manager_write_memory`, `team_manager_record_checkpoint`, and `team_manager_update_budget`
+8. `team_manager_emit_decision`
+9. `team_manager_state` with `includeFullAudit=true`
+
+The older `team_manager_advance`, `team_manager_kill_agent`, and `team_manager_resume_agent` tools are the rehearsed PostHog replay path. Use them only when you want the 60-second scripted demo beat.
 
 ## Terminal Harness
 
@@ -65,6 +66,27 @@ The harness prints:
 - memory promotion and summarizer context compression
 - checkpoint write, kill, and resume
 - final audit links from claim to blackboard entry to source document
+
+The harness is a replayable demo trace. The real MCP product surface is the generic tool set above: source registration, source ingestion, blackboard posting, scoped memory, checkpointing, budget governance, and audited decisions.
+
+## Arbitrary Task Demo
+
+For a non-PostHog prompt, do not use the replay tools. Use the generic MCP tools:
+
+```text
+I want to evaluate whether my company should get listed on Coinbase as an exchange or not. Use Team Manager to plan the agent room, ask me before starting, use sources I provide, keep private memory private, and return an audited decision.
+```
+
+The host should then call:
+
+1. `team_manager_plan_room` with the Coinbase-listing request.
+2. `team_manager_approve_plan` after user approval or edits.
+3. `team_manager_set_sources` with live URLs selected by the host or user.
+4. `team_manager_start_room`.
+5. `team_manager_ingest_sources`.
+6. The host-run specialists call the context, blackboard, memory, checkpoint, and budget tools while doing the work.
+
+If no custom sources are registered, `team_manager_start_room` deliberately refuses to ingest the PostHog source pack. That is the guardrail that prevents the generic MCP workflow from pretending a scripted vendor demo is live evidence for another task.
 
 ## What To Say
 
