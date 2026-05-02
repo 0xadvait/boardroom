@@ -801,6 +801,7 @@ export function killContractAgent(state: DemoState): { state: DemoState; writes:
   const writes: MongoWrite[] = [];
   const contracts = getSelected(working, "agent-contracts");
 
+  working.step = Math.max(working.step, 5);
   working.status = "agent_killed";
   working.updatedAt = now();
   setAgent(working, contracts.agentId, {
@@ -834,6 +835,7 @@ export function restartContractAgent(state: DemoState): { state: DemoState; writ
   const writes: MongoWrite[] = [];
   const contracts = getSelected(working, "agent-contracts");
 
+  working.step = Math.max(working.step, 6);
   working.status = "resumed";
   working.updatedAt = now();
   setAgent(working, contracts.agentId, {

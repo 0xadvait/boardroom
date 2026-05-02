@@ -4,6 +4,8 @@ MongoDB-native governance for multi-agent vendor evaluation.
 
 **Tagline:** Five agents. One budget. One blackboard. Kill any of them live and watch them resume.
 
+BoardRoom is packaged as an MCP control plane plus an observer UI. The MCP server exposes governance tools that any MCP-capable agent client can call; the dashboard is just a live judge-facing view of the same MongoDB-backed room.
+
 BoardRoom demonstrates four primitives for production multi-agent systems:
 
 - Capability profiling: dispatch uses declared skills plus proven MongoDB performance history.
@@ -31,6 +33,33 @@ npm run dev
 ```
 
 Open `http://localhost:3000`.
+
+Run the MCP server over stdio:
+
+```bash
+npm run mcp
+```
+
+For MCP client configs, prefer calling the server directly so stdio stays protocol-clean:
+
+```bash
+./node_modules/.bin/tsx scripts/mcp-server.ts
+```
+
+Available MCP tools:
+
+- `boardroom_start_room`
+- `boardroom_advance`
+- `boardroom_kill_agent`
+- `boardroom_resume_agent`
+- `boardroom_state`
+- `boardroom_reset`
+
+Terminal demo harness:
+
+```bash
+npm run harness -- "I want to due diligence PostHog as a vendor for my B2B SaaS business in the most efficient way."
+```
 
 ## Atlas Sandbox
 
@@ -76,7 +105,7 @@ Use the dashboard controls:
 
 **One-liner:** MongoDB governance for multi-agent workflows: capability dispatch, shared blackboard, layered memory, token budgets, and checkpoint recovery.
 
-**Live demo:** `npm run dev` then open `http://localhost:3000`.
+**Live demo:** `npm run dev` then open `http://localhost:3000`. For the infrastructure framing, run `npm run mcp` and call BoardRoom from an MCP client while the dashboard observes the same MongoDB-backed state.
 
 **MongoDB use:** Atlas stores the agent registry, active tasks, group budget, blackboard, layered memory cards, checkpoints, and audit log. Atlas Vector Search powers capability matching and filtered memory retrieval.
 
